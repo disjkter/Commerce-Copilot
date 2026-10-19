@@ -19,7 +19,8 @@
 - [ ] DeepSeek 证据化回答生成
 - [x] 结构化 Claim–Evidence Grounding 与失败关闭
 - [x] 订单状态与售后政策真实查询
-- [ ] 离线评测和前端
+- [x] 离线检索评测（Recall@K、Hit Rate@K、MRR）
+- [ ] 前端可观测界面
 
 ## 架构
 
@@ -60,6 +61,14 @@ py -3.12 -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 ```
+
+运行离线检索评测：
+
+```powershell
+.\.venv\Scripts\python.exe -m commerce_copilot.evaluation --k 3 --details
+```
+
+评测使用固定查询集，分别执行 FTS5 基线和混合检索，并输出 Recall@K、Hit Rate@K 与 MRR。固定小数据集用于回归测试和演示工程链路，不替代生产数据上的人工相关性标注。
 
 ## 项目原则
 
