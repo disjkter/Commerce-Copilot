@@ -5,6 +5,7 @@ from time import perf_counter
 
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
+from .retrieval import get_retriever
 
 
 AgentDraft = tuple[str, list[Evidence], list[Claim]]
@@ -30,7 +31,7 @@ async def product_scout(mission: Mission) -> AgentDraft:
         else _extract_budget_cents(mission.instruction)
     )
     hits = await asyncio.to_thread(
-        get_catalog().search_products,
+        get_retriever().search,
         product_query,
         max_price_cents=budget_cents,
         limit=3,
@@ -61,6 +62,7 @@ async def product_scout(mission: Mission) -> AgentDraft:
                     "price_cents": product.price_cents,
                     "rating": product.rating,
                     "stock": product.stock,
+                    "retrieval_sources": hit.retrieval_sources,
                 },
             )
         )

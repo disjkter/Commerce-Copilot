@@ -305,6 +305,34 @@ class CatalogRepository:
             row = connection.execute("SELECT COUNT(*) AS total FROM products").fetchone()
         return int(row["total"])
 
+    def list_products(
+        self,
+        *,
+        max_price_cents: int | None = None,
+        in_stock_only: bool = True,
+    ) -> list[Product]:
+        self.initialize()
+        conditions: list[str] = []
+        parameters: list[object] = []
+        if max_price_cents is not None:
+            conditions.append("price_cents <= ?")
+            parameters.append(max_price_cents)
+        if in_stock_only:
+            conditions.append("stock > 0")
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT product_id, title, category, brand, description,
+                       price_cents, rating, review_count, stock, tags
+                FROM products
+                {where_clause}
+                ORDER BY product_id
+                """,
+                parameters,
+            ).fetchall()
+        return [_row_to_product(row) for row in rows]
+
     def get_order(self, order_id: str) -> OrderRecord | None:
         self.initialize()
         with self._connect() as connection:
@@ -378,19 +406,23 @@ def _build_fts_query(query: str) -> str:
 
 def _row_to_hit(row: sqlite3.Row) -> ProductSearchHit:
     return ProductSearchHit(
-        product=Product(
-            product_id=row["product_id"],
-            title=row["title"],
-            category=row["category"],
-            brand=row["brand"],
-            description=row["description"],
-            price_cents=row["price_cents"],
-            rating=row["rating"],
-            review_count=row["review_count"],
-            stock=row["stock"],
-            tags=row["tags"].split(),
-        ),
+        product=_row_to_product(row),
         lexical_score=row["lexical_score"],
+    )
+
+
+def _row_to_product(row: sqlite3.Row) -> Product:
+    return Product(
+        product_id=row["product_id"],
+        title=row["title"],
+        category=row["category"],
+        brand=row["brand"],
+        description=row["description"],
+        price_cents=row["price_cents"],
+        rating=row["rating"],
+        review_count=row["review_count"],
+        stock=row["stock"],
+        tags=row["tags"].split(),
     )
 
 

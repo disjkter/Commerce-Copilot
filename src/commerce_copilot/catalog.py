@@ -17,3 +17,11 @@ class Product(BaseModel):
 class ProductSearchHit(BaseModel):
     product: Product
     lexical_score: float
+
+
+class HybridSearchHit(BaseModel):
+    product: Product
+    fused_score: float
+    lexical_rank: int | None = None
+    vector_rank: int | None = None
+    retrieval_sources: list[str] = Field(default_factory=list)
