@@ -9,6 +9,8 @@ def test_product_request_runs_product_scout_only():
 
     assert [report.role for report in reports] == [AgentRole.PRODUCT_SCOUT]
     assert "商品发现任务" in answer
+    assert reports[0].evidence
+    assert all(item.attributes["price_cents"] <= 50000 for item in reports[0].evidence)
     assert elapsed_ms >= 0
 
 

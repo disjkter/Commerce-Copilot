@@ -1,26 +1,61 @@
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 
-from .contracts import AgentReport, AgentRole, Mission
+from .contracts import AgentReport, AgentRole, Evidence, Mission
+from .database import get_catalog
 
 
-AgentHandler = Callable[[Mission], Awaitable[str]]
+AgentDraft = tuple[str, list[Evidence]]
+AgentHandler = Callable[[Mission], Awaitable[AgentDraft]]
 
 
-async def product_scout(mission: Mission) -> str:
+async def product_scout(mission: Mission) -> AgentDraft:
+    budget_cents = _extract_budget_cents(mission.instruction)
+    hits = await asyncio.to_thread(
+        get_catalog().search_products,
+        mission.instruction,
+        max_price_cents=budget_cents,
+        limit=3,
+    )
+    if not hits:
+        budget_note = f"且价格不超过 {budget_cents / 100:.0f} 元" if budget_cents else ""
+        return f"商品发现任务已完成，但目录中没有找到符合关键词{budget_note}的在售商品。", []
+
+    lines = ["商品发现任务已完成，找到以下候选："]
+    evidence: list[Evidence] = []
+    for index, hit in enumerate(hits, start=1):
+        product = hit.product
+        lines.append(
+            f"{index}. {product.title}｜{product.price_cents / 100:.2f} 元｜"
+            f"评分 {product.rating:.1f}｜库存 {product.stock}"
+        )
+        evidence.append(
+            Evidence(
+                source="local_catalog",
+                reference=product.product_id,
+                attributes={
+                    "price_cents": product.price_cents,
+                    "rating": product.rating,
+                    "stock": product.stock,
+                },
+            )
+        )
+    return "\n".join(lines), evidence
+
+
+async def order_care(mission: Mission) -> AgentDraft:
     await asyncio.sleep(0)
-    return f"我已识别商品发现任务：{mission.instruction}。商品数据层将在下一里程碑接入。"
+    return (
+        f"我已识别购买后服务任务：{mission.instruction}。需要订单号后才能查询具体状态。",
+        [],
+    )
 
 
-async def order_care(mission: Mission) -> str:
+async def conversation_guide(mission: Mission) -> AgentDraft:
     await asyncio.sleep(0)
-    return f"我已识别购买后服务任务：{mission.instruction}。需要订单号后才能查询具体状态。"
-
-
-async def conversation_guide(mission: Mission) -> str:
-    await asyncio.sleep(0)
-    return "你好，我可以协助挑选商品，也可以解释订单、物流和退换货问题。"
+    return "你好，我可以协助挑选商品，也可以解释订单、物流和退换货问题。", []
 
 
 HANDLERS: dict[AgentRole, AgentHandler] = {
@@ -33,15 +68,29 @@ HANDLERS: dict[AgentRole, AgentHandler] = {
 async def execute_mission(mission: Mission) -> AgentReport:
     started = perf_counter()
     try:
-        message = await HANDLERS[mission.role](mission)
+        message, evidence = await HANDLERS[mission.role](mission)
         status = "completed"
-    except Exception as exc:  # Boundary: one agent must not break sibling branches.
+    except Exception as exc:  # One failed branch must not erase sibling results.
         message = f"{mission.role.value} 暂时不可用：{type(exc).__name__}"
+        evidence = []
         status = "failed"
     return AgentReport(
         role=mission.role,
         message=message,
+        evidence=evidence,
         elapsed_ms=round((perf_counter() - started) * 1000, 2),
         status=status,
     )
 
+
+def _extract_budget_cents(text: str) -> int | None:
+    patterns = (
+        r"预算\s*(\d+(?:\.\d+)?)",
+        r"(\d+(?:\.\d+)?)\s*元(?:以内|以下|之内)",
+        r"不超过\s*(\d+(?:\.\d+)?)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return round(float(match.group(1)) * 100)
+    return None
