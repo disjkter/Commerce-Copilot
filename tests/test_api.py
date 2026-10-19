@@ -21,3 +21,4 @@ def test_turn_endpoint_exposes_agent_trace():
     assert body["elapsed_ms"] >= 0
     assert body["trace"]["planning_source"] == "local"
     assert body["trace"]["selected_agents"] == ["order_care"]
+    assert body["trace"]["grounding"]["passed"] is True

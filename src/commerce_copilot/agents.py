@@ -3,11 +3,11 @@ import re
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 
-from .contracts import AgentReport, AgentRole, Evidence, Mission
+from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
 
 
-AgentDraft = tuple[str, list[Evidence]]
+AgentDraft = tuple[str, list[Evidence], list[Claim]]
 AgentHandler = Callable[[Mission], Awaitable[AgentDraft]]
 
 
@@ -27,10 +27,15 @@ async def product_scout(mission: Mission) -> AgentDraft:
     )
     if not hits:
         budget_note = f"且价格不超过 {budget_cents / 100:.0f} 元" if budget_cents else ""
-        return f"商品发现任务已完成，但目录中没有找到符合关键词{budget_note}的在售商品。", []
+        return (
+            f"商品发现任务已完成，但目录中没有找到符合关键词{budget_note}的在售商品。",
+            [],
+            [],
+        )
 
     lines = ["商品发现任务已完成，找到以下候选："]
     evidence: list[Evidence] = []
+    claims: list[Claim] = []
     for index, hit in enumerate(hits, start=1):
         product = hit.product
         lines.append(
@@ -42,13 +47,29 @@ async def product_scout(mission: Mission) -> AgentDraft:
                 source="local_catalog",
                 reference=product.product_id,
                 attributes={
+                    "title": product.title,
                     "price_cents": product.price_cents,
                     "rating": product.rating,
                     "stock": product.stock,
                 },
             )
         )
-    return "\n".join(lines), evidence
+        claim_values = {
+            "title": product.title,
+            "price_cents": product.price_cents,
+            "rating": product.rating,
+            "stock": product.stock,
+        }
+        claims.extend(
+            Claim(
+                statement=f"{product.product_id} 的 {attribute} 为 {value}",
+                evidence_reference=product.product_id,
+                attribute=attribute,
+                expected_value=value,
+            )
+            for attribute, value in claim_values.items()
+        )
+    return "\n".join(lines), evidence, claims
 
 
 async def order_care(mission: Mission) -> AgentDraft:
@@ -56,12 +77,13 @@ async def order_care(mission: Mission) -> AgentDraft:
     return (
         f"我已识别购买后服务任务：{mission.instruction}。需要订单号后才能查询具体状态。",
         [],
+        [],
     )
 
 
 async def conversation_guide(mission: Mission) -> AgentDraft:
     await asyncio.sleep(0)
-    return "你好，我可以协助挑选商品，也可以解释订单、物流和退换货问题。", []
+    return "你好，我可以协助挑选商品，也可以解释订单、物流和退换货问题。", [], []
 
 
 HANDLERS: dict[AgentRole, AgentHandler] = {
@@ -74,16 +96,18 @@ HANDLERS: dict[AgentRole, AgentHandler] = {
 async def execute_mission(mission: Mission) -> AgentReport:
     started = perf_counter()
     try:
-        message, evidence = await HANDLERS[mission.role](mission)
+        message, evidence, claims = await HANDLERS[mission.role](mission)
         status = "completed"
     except Exception as exc:  # One failed branch must not erase sibling results.
         message = f"{mission.role.value} 暂时不可用：{type(exc).__name__}"
         evidence = []
+        claims = []
         status = "failed"
     return AgentReport(
         role=mission.role,
         message=message,
         evidence=evidence,
+        claims=claims,
         elapsed_ms=round((perf_counter() - started) * 1000, 2),
         status=status,
     )

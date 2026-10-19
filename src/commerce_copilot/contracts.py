@@ -22,10 +22,18 @@ class Evidence(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
+class Claim(BaseModel):
+    statement: str
+    evidence_reference: str
+    attribute: str
+    expected_value: Any
+
+
 class AgentReport(BaseModel):
     role: AgentRole
     message: str
     evidence: list[Evidence] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
     elapsed_ms: float = Field(ge=0)
     status: str = "completed"
 
@@ -35,10 +43,23 @@ class TurnRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class GroundingIssue(BaseModel):
+    role: AgentRole
+    statement: str
+    reason: str
+
+
+class GroundingSummary(BaseModel):
+    passed: bool
+    checked_claims: int = Field(ge=0)
+    issues: list[GroundingIssue] = Field(default_factory=list)
+
+
 class TurnTrace(BaseModel):
     planning_source: Literal["deepseek", "local", "local_after_error"]
     selected_agents: list[AgentRole]
     planner_error: str | None = None
+    grounding: GroundingSummary
 
 
 class TurnResponse(BaseModel):

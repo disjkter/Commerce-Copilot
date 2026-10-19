@@ -6,7 +6,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .agents import execute_mission
-from .contracts import AgentReport, Mission, TurnResponse, TurnTrace
+from .contracts import AgentReport, GroundingSummary, Mission, TurnResponse, TurnTrace
+from .grounding import validate_reports
 from .planning import DeepSeekPlanner
 
 
@@ -18,6 +19,7 @@ class WorkflowState(TypedDict, total=False):
     answer: str
     planning_source: str
     planner_error: str | None
+    grounding: GroundingSummary
 
 
 PLANNER = DeepSeekPlanner()
@@ -40,12 +42,20 @@ async def run_agent(state: WorkflowState) -> dict[str, list[AgentReport]]:
     return {"reports": [await execute_mission(state["mission"])]}
 
 
-def compose(state: WorkflowState) -> dict[str, str]:
+def compose(state: WorkflowState) -> dict[str, object]:
     reports = state.get("reports", [])
-    successful = [report.message for report in reports if report.status == "completed"]
+    grounding = validate_reports(reports)
+    blocked_roles = {issue.role for issue in grounding.issues}
+    successful = [
+        report.message
+        for report in reports
+        if report.status == "completed" and report.role not in blocked_roles
+    ]
     if not successful:
-        return {"answer": "本轮任务暂时无法完成，请稍后重试。"}
-    return {"answer": "\n\n".join(successful)}
+        answer = "本轮结果未通过事实校验，暂时无法提供确定性回答。"
+    else:
+        answer = "\n\n".join(successful)
+    return {"answer": answer, "grounding": grounding}
 
 
 def build_graph():
@@ -75,5 +85,6 @@ async def handle_turn(message: str) -> TurnResponse:
             planning_source=result.get("planning_source", "local"),
             selected_agents=[report.role for report in reports],
             planner_error=result.get("planner_error"),
+            grounding=result["grounding"],
         ),
     )

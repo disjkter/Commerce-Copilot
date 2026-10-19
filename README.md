@@ -17,7 +17,8 @@
 - [ ] 向量召回与混合排序
 - [x] DeepSeek 结构化任务规划与本地降级
 - [ ] DeepSeek 证据化回答生成
-- [ ] 引用校验、离线评测和前端
+- [x] 结构化 Claim–Evidence Grounding 与失败关闭
+- [ ] 离线评测和前端
 
 ## 架构
 
@@ -77,4 +78,8 @@ Product Scout 的第一阶段检索流程为：
 ```
 
 每个推荐结果都会返回商品编号以及价格、评分和库存事实，后续 Grounding 模块只允许根据这些 Evidence 生成确定性描述。
+
+## Grounding
+
+领域 Agent 在生成回复时同步输出结构化 Claim。Composer 在返回答案前，将每条 Claim 的引用编号、字段和值与 Evidence 对齐；缺少证据、缺少字段或值不一致都会产生 Grounding Issue。未通过校验的 Agent 报告不会进入最终回答，但其他并发分支的有效结果仍可保留。
 
