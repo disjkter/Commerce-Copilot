@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .catalog import Product, ProductSearchHit
 from .config import get_settings
+from .support import OrderItem, OrderRecord, PolicyRecord
 
 
 SCHEMA_SQL = """
@@ -208,6 +209,59 @@ class CatalogRepository:
                 rows,
             )
 
+    def seed_support_data(self) -> None:
+        self.initialize()
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO orders (order_id, status, placed_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(order_id) DO NOTHING
+                """,
+                (
+                    ("ORD-2026-1001", "shipped", "2026-10-15 14:30:00"),
+                    ("ORD-2026-1002", "delivered", "2026-10-10 09:20:00"),
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents)
+                SELECT o.id, p.id, ?, ?
+                FROM orders AS o, products AS p
+                WHERE o.order_id = ? AND p.product_id = ?
+                ON CONFLICT(order_id, product_id) DO NOTHING
+                """,
+                (
+                    (1, 32900, "ORD-2026-1001", "CP-AUD-101"),
+                    (1, 39900, "ORD-2026-1002", "CP-KEY-201"),
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO service_policies (topic, title, body, effective_from)
+                SELECT ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM service_policies WHERE topic = ?
+                )
+                """,
+                (
+                    (
+                        "returns",
+                        "七日退货规则",
+                        "签收后7日内，商品保持完好且配件齐全时可以申请退货；定制和已激活商品除外。",
+                        "2026-01-01",
+                        "returns",
+                    ),
+                    (
+                        "shipping",
+                        "发货与物流规则",
+                        "现货订单通常在付款后48小时内发出，具体状态以订单查询结果为准。",
+                        "2026-01-01",
+                        "shipping",
+                    ),
+                ),
+            )
+
     def search_products(
         self,
         query: str,
@@ -251,6 +305,62 @@ class CatalogRepository:
             row = connection.execute("SELECT COUNT(*) AS total FROM products").fetchone()
         return int(row["total"])
 
+    def get_order(self, order_id: str) -> OrderRecord | None:
+        self.initialize()
+        with self._connect() as connection:
+            order = connection.execute(
+                "SELECT id, order_id, status, placed_at FROM orders WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            if order is None:
+                return None
+            item_rows = connection.execute(
+                """
+                SELECT p.product_id, p.title, oi.quantity, oi.unit_price_cents
+                FROM order_items AS oi
+                JOIN products AS p ON p.id = oi.product_id
+                WHERE oi.order_id = ?
+                ORDER BY p.product_id
+                """,
+                (order["id"],),
+            ).fetchall()
+        return OrderRecord(
+            order_id=order["order_id"],
+            status=order["status"],
+            placed_at=order["placed_at"],
+            items=[
+                OrderItem(
+                    product_id=row["product_id"],
+                    title=row["title"],
+                    quantity=row["quantity"],
+                    unit_price_cents=row["unit_price_cents"],
+                )
+                for row in item_rows
+            ],
+        )
+
+    def get_policy(self, topic: str) -> PolicyRecord | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT topic, title, body, effective_from
+                FROM service_policies
+                WHERE topic = ?
+                ORDER BY effective_from DESC
+                LIMIT 1
+                """,
+                (topic,),
+            ).fetchone()
+        if row is None:
+            return None
+        return PolicyRecord(
+            topic=row["topic"],
+            title=row["title"],
+            body=row["body"],
+            effective_from=row["effective_from"],
+        )
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
@@ -288,4 +398,5 @@ def _row_to_hit(row: sqlite3.Row) -> ProductSearchHit:
 def get_catalog() -> CatalogRepository:
     repository = CatalogRepository(get_settings().database_path)
     repository.seed_products()
+    repository.seed_support_data()
     return repository

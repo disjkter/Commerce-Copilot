@@ -25,7 +25,8 @@ def test_mixed_request_fans_out_to_two_agents():
         AgentRole.ORDER_CARE,
     }
     assert "商品发现任务" in result.answer
-    assert "购买后服务任务" in result.answer
+    assert "发货与物流规则" in result.answer
+    assert "请提供" in result.answer
 
 
 def test_unknown_request_uses_conversation_guide():
