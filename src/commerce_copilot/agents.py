@@ -12,10 +12,16 @@ AgentHandler = Callable[[Mission], Awaitable[AgentDraft]]
 
 
 async def product_scout(mission: Mission) -> AgentDraft:
-    budget_cents = _extract_budget_cents(mission.instruction)
+    product_query = str(mission.parameters.get("product_query", mission.instruction))
+    configured_budget = mission.parameters.get("max_price_cents")
+    budget_cents = (
+        int(configured_budget)
+        if isinstance(configured_budget, (int, float))
+        else _extract_budget_cents(mission.instruction)
+    )
     hits = await asyncio.to_thread(
         get_catalog().search_products,
-        mission.instruction,
+        product_query,
         max_price_cents=budget_cents,
         limit=3,
     )

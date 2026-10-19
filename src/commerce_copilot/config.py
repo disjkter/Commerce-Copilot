@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -24,6 +29,6 @@ def get_settings() -> Settings:
         database_path=Path(os.getenv("DATABASE_PATH", "runtime/commerce.db")),
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
-        llm_model=os.getenv("LLM_MODEL", "deepseek-chat"),
+        llm_model=os.getenv("LLM_MODEL", "deepseek-flash"),
     )
 

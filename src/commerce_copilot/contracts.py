@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,7 @@ class AgentRole(StrEnum):
 class Mission(BaseModel):
     role: AgentRole
     instruction: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class Evidence(BaseModel):
@@ -34,8 +35,15 @@ class TurnRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class TurnTrace(BaseModel):
+    planning_source: Literal["deepseek", "local", "local_after_error"]
+    selected_agents: list[AgentRole]
+    planner_error: str | None = None
+
+
 class TurnResponse(BaseModel):
     answer: str
     reports: list[AgentReport]
     elapsed_ms: float = Field(ge=0)
+    trace: TurnTrace
 

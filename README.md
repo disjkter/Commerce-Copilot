@@ -15,7 +15,8 @@
 - [x] SQLite 商品、订单与政策表结构
 - [x] FTS5 商品召回、预算和库存硬过滤
 - [ ] 向量召回与混合排序
-- [ ] DeepSeek 结构化意图识别与回答生成
+- [x] DeepSeek 结构化任务规划与本地降级
+- [ ] DeepSeek 证据化回答生成
 - [ ] 引用校验、离线评测和前端
 
 ## 架构
@@ -49,6 +50,8 @@ py -3.12 -m venv .venv
 ```
 
 打开 `http://127.0.0.1:8010/docs`，调用 `POST /v1/turns`。
+
+如需启用 DeepSeek，将 `.env.example` 复制为 `.env`，只在 `.env` 中填写新生成的 `LLM_API_KEY`。没有配置 Key、请求超时或模型输出校验失败时，Supervisor 会自动使用本地规划器，并在响应的 `trace.planning_source` 中标记降级状态。
 
 运行测试：
 

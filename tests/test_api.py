@@ -19,3 +19,5 @@ def test_turn_endpoint_exposes_agent_trace():
     assert response.status_code == 200
     assert body["reports"][0]["role"] == "order_care"
     assert body["elapsed_ms"] >= 0
+    assert body["trace"]["planning_source"] == "local"
+    assert body["trace"]["selected_agents"] == ["order_care"]

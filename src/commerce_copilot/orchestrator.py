@@ -6,7 +6,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .agents import execute_mission
-from .contracts import AgentReport, AgentRole, Mission
+from .contracts import AgentReport, Mission, TurnResponse, TurnTrace
+from .planning import DeepSeekPlanner
 
 
 class WorkflowState(TypedDict, total=False):
@@ -15,22 +16,20 @@ class WorkflowState(TypedDict, total=False):
     mission: Mission
     reports: Annotated[list[AgentReport], operator.add]
     answer: str
+    planning_source: str
+    planner_error: str | None
 
 
-PRODUCT_TERMS = ("推荐", "商品", "价格", "预算", "耳机", "电脑", "手机", "买")
-CARE_TERMS = ("订单", "物流", "发货", "退款", "退货", "换货", "售后")
+PLANNER = DeepSeekPlanner()
 
 
-def plan(state: WorkflowState) -> dict[str, list[Mission]]:
-    message = state["message"].strip()
-    missions: list[Mission] = []
-    if any(term in message for term in PRODUCT_TERMS):
-        missions.append(Mission(role=AgentRole.PRODUCT_SCOUT, instruction=message))
-    if any(term in message for term in CARE_TERMS):
-        missions.append(Mission(role=AgentRole.ORDER_CARE, instruction=message))
-    if not missions:
-        missions.append(Mission(role=AgentRole.CONVERSATION_GUIDE, instruction=message))
-    return {"missions": missions}
+async def plan(state: WorkflowState) -> dict[str, object]:
+    decision = await PLANNER.create_plan(state["message"].strip())
+    return {
+        "missions": decision.missions,
+        "planning_source": decision.source,
+        "planner_error": decision.error,
+    }
 
 
 def fan_out(state: WorkflowState) -> list[Send]:
@@ -64,9 +63,17 @@ def build_graph():
 GRAPH = build_graph()
 
 
-async def handle_turn(message: str) -> tuple[str, list[AgentReport], float]:
+async def handle_turn(message: str) -> TurnResponse:
     started = perf_counter()
     result = await GRAPH.ainvoke({"message": message, "reports": []})
-    elapsed_ms = round((perf_counter() - started) * 1000, 2)
-    return result["answer"], result.get("reports", []), elapsed_ms
-
+    reports = result.get("reports", [])
+    return TurnResponse(
+        answer=result["answer"],
+        reports=reports,
+        elapsed_ms=round((perf_counter() - started) * 1000, 2),
+        trace=TurnTrace(
+            planning_source=result.get("planning_source", "local"),
+            selected_agents=[report.role for report in reports],
+            planner_error=result.get("planner_error"),
+        ),
+    )
