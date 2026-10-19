@@ -16,7 +16,7 @@
 - [x] FTS5 商品召回、预算和库存硬过滤
 - [x] 离线向量召回与 RRF 混合排序
 - [x] DeepSeek 结构化任务规划与本地降级
-- [ ] DeepSeek 证据化回答生成
+- [x] DeepSeek 证据化回答生成与本地降级
 - [x] 结构化 Claim–Evidence Grounding 与失败关闭
 - [x] 订单状态与售后政策真实查询
 - [x] 离线检索评测（Recall@K、Hit Rate@K、MRR）
@@ -96,6 +96,10 @@ Product Scout 的第一阶段检索流程为：
 离线向量通道默认使用无外部依赖的中文二元组特征哈希，确保项目首次运行不下载模型；`Vectorizer` 协议允许后续替换为 BGE 等语义 Embedding。该默认实现用于验证向量索引与融合链路，不冒充预训练语义模型。
 
 每个推荐结果都会返回商品编号以及价格、评分和库存事实，后续 Grounding 模块只允许根据这些 Evidence 生成确定性描述。
+
+## 证据化回答生成
+
+通过 Grounding 的 Agent 报告会交给 DeepSeek 组织自然语言。模型必须同时返回回答和结构化 Claims，每条事实都要标注 Evidence 引用；代码会重新校验引用、字段和值。未知引用、字段缺失、值被修改、接口超时或 JSON 不合法时，系统自动返回确定性的本地答案。响应中的 `trace.answer_source` 和 `trace.composer_error` 用于观察生成来源与降级原因。
 
 ## Grounding
 

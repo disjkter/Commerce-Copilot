@@ -57,8 +57,10 @@ class GroundingSummary(BaseModel):
 
 class TurnTrace(BaseModel):
     planning_source: Literal["deepseek", "local", "local_after_error"]
+    answer_source: Literal["deepseek", "local", "local_after_error"]
     selected_agents: list[AgentRole]
     planner_error: str | None = None
+    composer_error: str | None = None
     grounding: GroundingSummary
 
 

@@ -13,6 +13,7 @@ def test_product_request_runs_product_scout_only():
     assert all(item.attributes["price_cents"] <= 50000 for item in result.reports[0].evidence)
     assert result.elapsed_ms >= 0
     assert result.trace.planning_source == "local"
+    assert result.trace.answer_source == "local"
     assert result.trace.grounding.passed is True
     assert result.trace.grounding.checked_claims > 0
 

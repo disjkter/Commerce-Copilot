@@ -1,3 +1,5 @@
+import asyncio
+
 from commerce_copilot.contracts import (
     AgentReport,
     AgentRole,
@@ -57,7 +59,7 @@ def test_grounding_rejects_missing_attribute():
 
 
 def test_composer_hides_report_that_fails_grounding():
-    result = compose({"reports": [make_report(expected_price=39900)]})
+    result = asyncio.run(compose({"reports": [make_report(expected_price=39900)]}))
 
     assert result["grounding"].passed is False
     assert "329元" not in result["answer"]
