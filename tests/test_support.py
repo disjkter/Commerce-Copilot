@@ -1,4 +1,5 @@
 import asyncio
+from uuid import uuid4
 
 from commerce_copilot.contracts import AgentRole
 from commerce_copilot.database import CatalogRepository
@@ -49,7 +50,7 @@ def test_order_agent_returns_grounded_order_and_policy():
     assert "已发货" in result.answer
     assert "七日退货规则" in result.answer
     assert result.trace.grounding.passed is True
-    assert result.trace.grounding.checked_claims == 5
+    assert result.trace.grounding.checked_claims == 3
 
 
 def test_order_agent_requests_id_when_missing():
@@ -58,3 +59,18 @@ def test_order_agent_requests_id_when_missing():
     assert "请提供" in result.answer
     assert "ORD-2026-1001" in result.answer
     assert result.trace.grounding.passed is True
+
+
+def test_status_follow_up_returns_only_requested_order_field():
+    conversation_id = f"support-{uuid4().hex}"
+    asyncio.run(
+        handle_turn("查询订单 ORD-2026-1001，并告诉我退货政策", conversation_id)
+    )
+
+    result = asyncio.run(handle_turn("它现在是什么状态？", conversation_id))
+
+    assert "当前状态：已发货" in result.answer
+    assert "下单时间" not in result.answer
+    assert "商品：" not in result.answer
+    assert "七日退货规则" not in result.answer
+    assert result.trace.grounding.checked_claims == 1

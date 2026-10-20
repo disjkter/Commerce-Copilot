@@ -21,6 +21,10 @@ STATUS_LABELS = {
 }
 RETURN_TERMS = ("退款", "退货", "换货", "能退", "可以退")
 SHIPPING_TERMS = ("物流", "发货", "配送")
+STATUS_QUERY_TERMS = ("状态", "到哪", "进度", "物流", "发货了吗", "送达了吗")
+ITEM_QUERY_TERMS = ("商品", "买了什么", "买的什么", "什么东西", "包含什么")
+PLACED_AT_QUERY_TERMS = ("下单时间", "什么时候下单", "哪天下单")
+CURRENT_TURN_MARKER = "当前追问："
 
 
 async def product_scout(mission: Mission) -> AgentDraft:
@@ -89,6 +93,7 @@ async def product_scout(mission: Mission) -> AgentDraft:
 
 async def order_care(mission: Mission) -> AgentDraft:
     text = mission.instruction
+    current_text = _current_turn_text(text)
     order_match = ORDER_ID_PATTERN.search(text)
     messages: list[str] = []
     evidence: list[Evidence] = []
@@ -104,15 +109,13 @@ async def order_care(mission: Mission) -> AgentDraft:
             item_summary = "、".join(
                 f"{item.title}×{item.quantity}" for item in order.items
             ) or "无商品明细"
-            messages.append(
-                f"订单 {order.order_id} 当前状态：{status_label}；"
-                f"下单时间：{order.placed_at}；商品：{item_summary}。"
-            )
-            attributes = {
+            all_attributes = {
                 "status_label": status_label,
                 "placed_at": order.placed_at,
                 "item_summary": item_summary,
             }
+            attributes = _select_order_attributes(current_text, all_attributes)
+            messages.append(_format_order_message(order.order_id, attributes))
             evidence.append(
                 Evidence(
                     source="local_orders",
@@ -130,7 +133,7 @@ async def order_care(mission: Mission) -> AgentDraft:
                 for attribute, value in attributes.items()
             )
 
-    policy_topic = _policy_topic(text)
+    policy_topic = _policy_topic(current_text)
     if policy_topic:
         policy = await asyncio.to_thread(get_catalog().get_policy, policy_topic)
         if policy:
@@ -201,6 +204,41 @@ async def execute_mission(mission: Mission) -> AgentReport:
         elapsed_ms=round((perf_counter() - started) * 1000, 2),
         status=status,
     )
+
+
+def _current_turn_text(text: str) -> str:
+    if CURRENT_TURN_MARKER not in text:
+        return text
+    return text.rsplit(CURRENT_TURN_MARKER, maxsplit=1)[-1].strip()
+
+
+def _select_order_attributes(
+    text: str,
+    attributes: dict[str, str],
+) -> dict[str, str]:
+    selected: dict[str, str] = {}
+    if any(term in text for term in STATUS_QUERY_TERMS):
+        selected["status_label"] = attributes["status_label"]
+    if any(term in text for term in PLACED_AT_QUERY_TERMS):
+        selected["placed_at"] = attributes["placed_at"]
+    if any(term in text for term in ITEM_QUERY_TERMS):
+        selected["item_summary"] = attributes["item_summary"]
+    return selected or attributes
+
+
+def _format_order_message(order_id: str, attributes: dict[str, str]) -> str:
+    labels = {
+        "status_label": "当前状态",
+        "placed_at": "下单时间",
+        "item_summary": "商品",
+    }
+    details = "；".join(
+        f"{labels[attribute]}：{value}"
+        for attribute, value in attributes.items()
+    )
+    return f"订单 {order_id} {details}。"
+
+
 def _policy_topic(text: str) -> str | None:
     if any(term in text for term in RETURN_TERMS):
         return "returns"
