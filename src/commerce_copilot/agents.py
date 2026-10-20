@@ -5,6 +5,7 @@ from time import perf_counter
 
 from .budget import extract_budget_cents
 from .catalog import HybridSearchHit
+from .comparison import compare_products
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
 from .retrieval import get_retriever
@@ -118,6 +119,14 @@ async def product_scout(mission: Mission) -> AgentDraft:
             )
             for attribute, value in claim_values.items()
         )
+    comparison_requested = (
+        isinstance(selected_references, list) and len(selected_references) > 1
+    ) or any(term in mission.instruction for term in ("对比", "比较"))
+    if comparison_requested and len(hits) > 1:
+        comparison = compare_products([hit.product for hit in hits])
+        lines.extend(("", comparison.message))
+        evidence.append(comparison.evidence)
+        claims.extend(comparison.claims)
     return "\n".join(lines), evidence, claims
 
 

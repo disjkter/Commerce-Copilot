@@ -85,7 +85,7 @@ def test_product_ordinal_uses_previous_evidence_order():
         handle_turn("第一款和第二款对比一下", conversation_id)
     )
     compared_products = next(
-        report.evidence
+        [item for item in report.evidence if item.source == "local_catalog"]
         for report in comparison.reports
         if report.role == AgentRole.PRODUCT_SCOUT
     )
@@ -94,6 +94,14 @@ def test_product_ordinal_uses_previous_evidence_order():
         first_products[0].reference,
         first_products[1].reference,
     ]
+    comparison_evidence = next(
+        item
+        for report in comparison.reports
+        for item in report.evidence
+        if item.source == "derived_comparison"
+    )
+    assert comparison_evidence.attributes["price_gap_cents"] == 14000
+    assert "相差 140.00 元" in comparison.answer
 
 
 def test_unknown_request_uses_conversation_guide():

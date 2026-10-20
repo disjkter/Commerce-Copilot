@@ -110,6 +110,8 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 
 商品推荐的 Evidence 会按展示顺序随会话保存。后续出现“第一款、第二款、第三款”等表达时，Planner 将序号映射回上一轮真实商品编号；Product Scout 直接按编号读取商品，避免重新检索造成排序变化。多个序号可以组成同一轮商品对比。
 
+商品对比由确定性代码计算最低价格、最高评分和价差，并生成 `derived_comparison` Evidence。对比结论和普通商品事实使用同一套 Claim–Evidence Grounding，不依赖模型进行算术计算。
+
 ## Grounding
 
 领域 Agent 在生成回复时同步输出结构化 Claim。Composer 在返回答案前，将每条 Claim 的引用编号、字段和值与 Evidence 对齐；缺少证据、缺少字段或值不一致都会产生 Grounding Issue。未通过校验的 Agent 报告不会进入最终回答，但其他并发分支的有效结果仍可保留。
