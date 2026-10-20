@@ -44,6 +44,12 @@ class ConversationTurn(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
 
 
+class UserRecord(BaseModel):
+    user_id: str
+    username: str
+    password_hash: str
+
+
 class TurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     conversation_id: str | None = Field(

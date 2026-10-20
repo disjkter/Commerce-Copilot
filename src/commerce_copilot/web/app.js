@@ -8,9 +8,22 @@ const traceEmpty = document.querySelector("#trace-empty");
 const traceContent = document.querySelector("#trace-content");
 const runState = document.querySelector("#run-state");
 const sessionLabel = document.querySelector("#session-label");
+const authScreen = document.querySelector("#auth-screen");
+const authForm = document.querySelector("#auth-form");
+const authTitle = document.querySelector("#auth-title");
+const authDescription = document.querySelector("#auth-description");
+const authSubmit = document.querySelector("#auth-submit");
+const authToggle = document.querySelector("#auth-toggle");
+const authError = document.querySelector("#auth-error");
+const logoutButton = document.querySelector("#logout-button");
+const userLabel = document.querySelector("#user-label");
 let conversationId = sessionStorage.getItem("commerce_conversation_id");
+let accessToken = sessionStorage.getItem("commerce_access_token");
+let currentUsername = sessionStorage.getItem("commerce_username");
+let authMode = "login";
 
 updateSessionLabel();
+updateAuthState();
 
 const roleMeta = {
   product_scout: { name: "Product Scout", symbol: "PS" },
@@ -25,6 +38,49 @@ document.querySelectorAll("[data-example]").forEach((button) => {
     input.focus();
   });
 });
+
+authToggle.addEventListener("click", () => {
+  authMode = authMode === "login" ? "register" : "login";
+  authTitle.textContent = authMode === "login" ? "登录后开始协作" : "创建本地账号";
+  authDescription.textContent = authMode === "login"
+    ? "身份用于隔离会话和订单数据。"
+    : "密码只保存为加盐哈希，不保存明文。";
+  authSubmit.textContent = authMode === "login" ? "登录" : "创建账号";
+  authToggle.textContent = authMode === "login"
+    ? "没有账号？创建账号"
+    : "已有账号？返回登录";
+  authError.classList.add("hidden");
+});
+
+authForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  authSubmit.disabled = true;
+  authError.classList.add("hidden");
+  const username = document.querySelector("#auth-username").value.trim();
+  const password = document.querySelector("#auth-password").value;
+  try {
+    const response = await fetch(`/v1/auth/${authMode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "认证失败");
+    accessToken = body.access_token;
+    currentUsername = body.user.username;
+    sessionStorage.setItem("commerce_access_token", accessToken);
+    sessionStorage.setItem("commerce_username", currentUsername);
+    authForm.reset();
+    updateAuthState();
+  } catch (error) {
+    authError.textContent = error.message;
+    authError.classList.remove("hidden");
+  } finally {
+    authSubmit.disabled = false;
+  }
+});
+
+logoutButton.addEventListener("click", logout);
 
 input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => {
@@ -60,10 +116,17 @@ form.addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/v1/turns", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+      },
       body: JSON.stringify({ message: text, conversation_id: conversationId }),
     });
     const body = await response.json();
+    if (response.status === 401) {
+      logout();
+      throw new Error("登录已过期，请重新登录");
+    }
     if (!response.ok) {
       throw new Error(body.detail ? JSON.stringify(body.detail) : `HTTP ${response.status}`);
     }
@@ -266,4 +329,23 @@ function updateSessionLabel() {
   sessionLabel.textContent = conversationId
     ? `SESSION · ${conversationId.slice(0, 8).toUpperCase()}`
     : "NEW SESSION";
+}
+
+function updateAuthState() {
+  const authenticated = Boolean(accessToken && currentUsername);
+  authScreen.classList.toggle("hidden", authenticated);
+  userLabel.textContent = authenticated ? `USER · ${currentUsername.toUpperCase()}` : "";
+  if (authenticated) input.focus();
+}
+
+function logout() {
+  accessToken = null;
+  currentUsername = null;
+  conversationId = null;
+  sessionStorage.removeItem("commerce_access_token");
+  sessionStorage.removeItem("commerce_username");
+  sessionStorage.removeItem("commerce_conversation_id");
+  resetTrace();
+  updateSessionLabel();
+  updateAuthState();
 }

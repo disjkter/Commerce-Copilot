@@ -18,6 +18,8 @@ class Settings:
     llm_api_key: str
     llm_base_url: str
     llm_model: str
+    auth_secret: str = "local-development-secret-change-before-deploying"
+    access_token_minutes: int = 120
 
 
 @lru_cache
@@ -30,5 +32,10 @@ def get_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
         llm_model=os.getenv("LLM_MODEL", "deepseek-flash"),
+        auth_secret=os.getenv(
+            "AUTH_SECRET",
+            "local-development-secret-change-before-deploying",
+        ),
+        access_token_minutes=int(os.getenv("ACCESS_TOKEN_MINUTES", "120")),
     )
 

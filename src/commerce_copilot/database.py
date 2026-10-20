@@ -5,11 +5,13 @@ import threading
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
+from uuid import uuid4
 
 from .catalog import Product, ProductSearchHit
 from .config import get_settings
-from .contracts import ConversationTurn, Evidence
+from .contracts import ConversationTurn, Evidence, UserRecord
 from .support import OrderItem, OrderRecord, PolicyRecord
+from .security import hash_password
 
 
 SCHEMA_SQL = """
@@ -98,6 +100,25 @@ CREATE TABLE IF NOT EXISTS conversation_turn_evidence (
     reference TEXT NOT NULL,
     attributes_json TEXT NOT NULL,
     PRIMARY KEY (turn_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS order_owners (
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (order_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_owners (
+    conversation_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
 );
 """
 
@@ -284,6 +305,25 @@ class CatalogRepository:
                 ),
             )
 
+    def seed_demo_identity(self) -> None:
+        self.initialize()
+        existing = self.get_user_by_username("demo")
+        if existing is None:
+            self.create_user(
+                "demo",
+                hash_password("demo12345"),
+                user_id="user-demo",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO order_owners (order_id, user_id)
+                SELECT o.id, u.id
+                FROM orders AS o, users AS u
+                WHERE u.user_id = 'user-demo'
+                """
+            )
+
     def search_products(
         self,
         query: str,
@@ -369,13 +409,30 @@ class CatalogRepository:
             ).fetchone()
         return _row_to_product(row) if row else None
 
-    def get_order(self, order_id: str) -> OrderRecord | None:
+    def get_order(
+        self,
+        order_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> OrderRecord | None:
         self.initialize()
         with self._connect() as connection:
-            order = connection.execute(
-                "SELECT id, order_id, status, placed_at FROM orders WHERE order_id = ?",
-                (order_id,),
-            ).fetchone()
+            if user_id is None:
+                order = connection.execute(
+                    "SELECT id, order_id, status, placed_at FROM orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+            else:
+                order = connection.execute(
+                    """
+                    SELECT o.id, o.order_id, o.status, o.placed_at
+                    FROM orders AS o
+                    JOIN order_owners AS ownership ON ownership.order_id = o.id
+                    JOIN users AS u ON u.id = ownership.user_id
+                    WHERE o.order_id = ? AND u.user_id = ?
+                    """,
+                    (order_id, user_id),
+                ).fetchone()
             if order is None:
                 return None
             item_rows = connection.execute(
@@ -424,6 +481,93 @@ class CatalogRepository:
             body=row["body"],
             effective_from=row["effective_from"],
         )
+
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        *,
+        user_id: str | None = None,
+    ) -> UserRecord:
+        self.initialize()
+        active_user_id = user_id or f"user-{uuid4().hex}"
+        normalized_username = username.strip()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO users (user_id, username, password_hash)
+                VALUES (?, ?, ?)
+                """,
+                (active_user_id, normalized_username, password_hash),
+            )
+        return UserRecord(
+            user_id=active_user_id,
+            username=normalized_username,
+            password_hash=password_hash,
+        )
+
+    def get_user_by_username(self, username: str) -> UserRecord | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT user_id, username, password_hash
+                FROM users
+                WHERE username = ? COLLATE NOCASE
+                """,
+                (username.strip(),),
+            ).fetchone()
+        return _row_to_user(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> UserRecord | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT user_id, username, password_hash
+                FROM users
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        return _row_to_user(row) if row else None
+
+    def assign_order_to_user(self, order_id: str, user_id: str) -> bool:
+        self.initialize()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO order_owners (order_id, user_id)
+                SELECT o.id, u.id
+                FROM orders AS o, users AS u
+                WHERE o.order_id = ? AND u.user_id = ?
+                """,
+                (order_id, user_id),
+            )
+        return cursor.rowcount > 0
+
+    def ensure_conversation_owner(self, conversation_id: str, user_id: str) -> bool:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT u.user_id
+                FROM conversation_owners AS ownership
+                JOIN users AS u ON u.id = ownership.user_id
+                WHERE ownership.conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if row is not None:
+                return row["user_id"] == user_id
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO conversation_owners (conversation_id, user_id)
+                SELECT ?, id FROM users WHERE user_id = ?
+                """,
+                (conversation_id, user_id),
+            )
+        return cursor.rowcount > 0
 
     def add_conversation_turn(
         self,
@@ -544,9 +688,18 @@ def _row_to_product(row: sqlite3.Row) -> Product:
     )
 
 
+def _row_to_user(row: sqlite3.Row) -> UserRecord:
+    return UserRecord(
+        user_id=row["user_id"],
+        username=row["username"],
+        password_hash=row["password_hash"],
+    )
+
+
 @lru_cache
 def get_catalog() -> CatalogRepository:
     repository = CatalogRepository(get_settings().database_path)
     repository.seed_products()
     repository.seed_support_data()
+    repository.seed_demo_identity()
     return repository

@@ -24,6 +24,7 @@ from .planning import DeepSeekPlanner
 
 class WorkflowState(TypedDict, total=False):
     message: str
+    user_id: str
     history: list[ConversationTurn]
     missions: list[Mission]
     mission: Mission
@@ -45,8 +46,19 @@ async def plan(state: WorkflowState) -> dict[str, object]:
         state["message"].strip(),
         state.get("history", []),
     )
+    missions = [
+        mission.model_copy(
+            update={
+                "parameters": {
+                    **mission.parameters,
+                    "user_id": state["user_id"],
+                }
+            }
+        )
+        for mission in decision.missions
+    ]
     return {
-        "missions": decision.missions,
+        "missions": missions,
         "planning_source": decision.source,
         "planner_error": decision.error,
     }
@@ -109,16 +121,30 @@ GRAPH = build_graph()
 async def handle_turn(
     message: str,
     conversation_id: str | None = None,
+    *,
+    user_id: str = "user-demo",
 ) -> TurnResponse:
     started = perf_counter()
     active_conversation_id = conversation_id or uuid4().hex
     repository = get_catalog()
+    owns_conversation = await asyncio.to_thread(
+        repository.ensure_conversation_owner,
+        active_conversation_id,
+        user_id,
+    )
+    if not owns_conversation:
+        raise PermissionError("conversation belongs to another user")
     history = await asyncio.to_thread(
         repository.get_recent_conversation_turns,
         active_conversation_id,
     )
     result = await GRAPH.ainvoke(
-        {"message": message, "history": history, "reports": []}
+        {
+            "message": message,
+            "user_id": user_id,
+            "history": history,
+            "reports": [],
+        }
     )
     reports = result.get("reports", [])
     response = TurnResponse(

@@ -8,6 +8,28 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
+    <section id="auth-screen" class="auth-screen" aria-labelledby="auth-title">
+      <div class="auth-card">
+        <div class="auth-brand"><span>CC</span> COMMERCE COPILOT</div>
+        <p class="eyebrow">SECURE AGENT CONSOLE</p>
+        <h1 id="auth-title">登录后开始协作</h1>
+        <p id="auth-description" class="auth-description">身份用于隔离会话和订单数据。</p>
+        <form id="auth-form" class="auth-form">
+          <label for="auth-username">用户名</label>
+          <input id="auth-username" name="username" minlength="3" maxlength="32" autocomplete="username" required />
+          <label for="auth-password">密码</label>
+          <input id="auth-password" name="password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required />
+          <p id="auth-error" class="auth-error hidden" role="alert"></p>
+          <button id="auth-submit" class="auth-submit" type="submit">登录</button>
+        </form>
+        <button id="auth-toggle" class="auth-toggle" type="button">没有账号？创建账号</button>
+        <div class="demo-credential">
+          <span>演示订单账号</span>
+          <code>demo / demo12345</code>
+        </div>
+      </div>
+    </section>
+
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="/" aria-label="Commerce Copilot 首页">
@@ -21,6 +43,8 @@
           <span class="pulse" aria-hidden="true"></span>
           <span>LOCAL SYSTEM</span>
           <span id="session-label">NEW SESSION</span>
+          <span id="user-label"></span>
+          <button id="logout-button" class="logout-button" type="button">退出</button>
           <a href="/docs" target="_blank" rel="noreferrer">API DOCS ↗</a>
         </div>
       </header>

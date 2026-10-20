@@ -26,6 +26,78 @@ body {
   background: var(--paper);
 }
 
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(7, 28, 23, 0.94);
+  backdrop-filter: blur(8px);
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  padding: 34px;
+  border: 1px solid #41665a;
+  border-radius: 16px;
+  background: #f8faf8;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.3);
+}
+
+.auth-brand {
+  margin-bottom: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--forest-deep);
+  font: 800 10px/1 ui-monospace, monospace;
+  letter-spacing: 0.1em;
+}
+
+.auth-brand span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--forest);
+  color: var(--lime);
+  letter-spacing: 0;
+}
+
+.auth-card h1 { margin-bottom: 8px; }
+.auth-description { margin-bottom: 24px; color: var(--muted); font-size: 13px; }
+.auth-form { display: grid; gap: 8px; }
+.auth-form label { margin-top: 7px; color: #4f5c56; font-size: 11px; font-weight: 700; }
+.auth-form input {
+  width: 100%;
+  height: 43px;
+  padding: 0 12px;
+  border: 1px solid #b8c4be;
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  color: var(--ink);
+}
+.auth-form input:focus { border-color: var(--forest); box-shadow: 0 0 0 3px rgba(18, 62, 50, 0.08); }
+.auth-submit {
+  height: 44px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--forest);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+}
+.auth-submit:disabled { opacity: .55; cursor: wait; }
+.auth-toggle { width: 100%; margin-top: 14px; border: 0; background: transparent; color: var(--forest); cursor: pointer; font-size: 12px; }
+.auth-error { margin: 7px 0 0; color: var(--danger); font-size: 11px; }
+.demo-credential { margin-top: 24px; padding: 12px; display: flex; justify-content: space-between; border: 1px dashed #b6c6be; border-radius: 8px; color: var(--muted); font-size: 10px; }
+.demo-credential code { color: var(--forest); font-weight: 800; }
+
 button, textarea { font: inherit; }
 button { color: inherit; }
 
@@ -83,6 +155,8 @@ button { color: inherit; }
 
 .system-status a { margin-left: 18px; color: #f4f8f6; text-decoration: none; }
 .system-status a:hover { color: var(--lime); }
+.logout-button { padding: 0; border: 0; background: transparent; color: #bad0c8; cursor: pointer; font: inherit; letter-spacing: inherit; }
+.logout-button:hover { color: var(--lime); }
 
 .pulse {
   width: 8px;

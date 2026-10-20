@@ -22,6 +22,7 @@
 - [x] 离线检索评测（Recall@K、Hit Rate@K、MRR）
 - [x] 前端可观测界面
 - [x] conversation_id 多轮会话记忆与上下文追问
+- [x] 用户注册登录、签名 Token、订单与会话归属校验
 
 ## 架构
 
@@ -56,6 +57,8 @@ py -3.12 -m venv .venv
 打开 `http://127.0.0.1:8010/` 使用对话与 Agent 可观测界面；`http://127.0.0.1:8010/docs` 提供 API 调试文档。
 
 如需启用 DeepSeek，将 `.env.example` 复制为 `.env`，只在 `.env` 中填写新生成的 `LLM_API_KEY`。没有配置 Key、请求超时或模型输出校验失败时，Supervisor 会自动使用本地规划器，并在响应的 `trace.planning_source` 中标记降级状态。
+
+首次本地运行可使用演示账号 `demo / demo12345` 查询演示订单。部署到共享环境前必须在 `.env` 中设置足够长且随机的 `AUTH_SECRET`，并删除或禁用演示账号。
 
 运行测试：
 
@@ -111,6 +114,10 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 商品推荐的 Evidence 会按展示顺序随会话保存。后续出现“第一款、第二款、第三款”等表达时，Planner 将序号映射回上一轮真实商品编号；Product Scout 直接按编号读取商品，避免重新检索造成排序变化。多个序号可以组成同一轮商品对比。
 
 商品对比由确定性代码计算最低价格、最高评分和价差，并生成 `derived_comparison` Evidence。对比结论和普通商品事实使用同一套 Claim–Evidence Grounding，不依赖模型进行算术计算。
+
+## 用户鉴权
+
+`POST /v1/auth/register` 和 `POST /v1/auth/login` 接收 JSON 用户名与密码，密码使用带随机盐的 PBKDF2-SHA256 哈希保存。登录返回带过期时间和 HMAC-SHA256 签名的 Bearer Token；`POST /v1/turns` 必须携带该 Token。订单查询同时校验订单归属，会话编号在首次使用时绑定当前用户，其他用户复用该编号会得到 `403`。网页将 Token 保存在当前标签页的 `sessionStorage`，关闭标签页后不会长期保留。
 
 ## Grounding
 

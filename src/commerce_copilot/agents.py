@@ -140,7 +140,13 @@ async def order_care(mission: Mission) -> AgentDraft:
 
     if order_match:
         order_id = order_match.group(0).upper()
-        order = await asyncio.to_thread(get_catalog().get_order, order_id)
+        configured_user_id = mission.parameters.get("user_id")
+        user_id = str(configured_user_id) if configured_user_id else None
+        order = await asyncio.to_thread(
+            get_catalog().get_order,
+            order_id,
+            user_id=user_id,
+        )
         if order is None:
             messages.append(f"没有查询到订单 {order_id}，请检查订单号是否正确。")
         else:

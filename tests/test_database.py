@@ -1,5 +1,6 @@
 from commerce_copilot.database import CatalogRepository
 from commerce_copilot.contracts import Evidence
+from commerce_copilot.security import hash_password
 
 
 def test_seed_is_idempotent(tmp_path):
@@ -69,3 +70,15 @@ def test_conversation_turn_preserves_ordered_evidence(tmp_path):
     turn = repository.get_recent_conversation_turns("session-a")[0]
 
     assert [item.reference for item in turn.evidence] == ["CP-AUD-102", "CP-AUD-101"]
+
+
+def test_order_lookup_enforces_user_ownership(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+    repository.seed_products()
+    repository.seed_support_data()
+    owner = repository.create_user("owner", hash_password("owner-password"))
+    other = repository.create_user("other", hash_password("other-password"))
+    repository.assign_order_to_user("ORD-2026-1001", owner.user_id)
+
+    assert repository.get_order("ORD-2026-1001", user_id=owner.user_id) is not None
+    assert repository.get_order("ORD-2026-1001", user_id=other.user_id) is None
