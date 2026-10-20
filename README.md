@@ -107,7 +107,7 @@ Product Scout 的第一阶段检索流程为：
 
 ## 多轮会话
 
-`POST /v1/turns` 接受可选的 `conversation_id`，未提供时由服务端生成并在响应中返回。每轮用户消息和回答写入 SQLite；Planner 最多读取最近 6 轮，在识别到指代或追问表达时补充上下文。网页会在当前浏览器标签页保存会话编号，点击“清空会话”会开启新的会话。
+`POST /v1/turns` 接受可选的 `conversation_id`，未提供时由服务端生成并在响应中返回。每轮用户消息和回答写入关系型数据库；Planner 最多读取最近 6 轮，在识别到指代或追问表达时补充上下文。网页会在当前浏览器标签页保存会话编号，点击“清空会话”会开启新的会话。
 
 Order Care 会依据当前一轮的问题选择状态、下单时间或商品明细，避免状态追问重复输出整张订单；政策识别也只检查当前消息，不会被历史中的“退货”或“物流”关键词重复触发。
 
@@ -118,6 +118,21 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 ## 用户鉴权
 
 `POST /v1/auth/register` 和 `POST /v1/auth/login` 接收 JSON 用户名与密码，密码使用带随机盐的 PBKDF2-SHA256 哈希保存。登录返回带过期时间和 HMAC-SHA256 签名的 Bearer Token；`POST /v1/turns` 必须携带该 Token。订单查询同时校验订单归属，会话编号在首次使用时绑定当前用户，其他用户复用该编号会得到 `403`。网页将 Token 保存在当前标签页的 `sessionStorage`，关闭标签页后不会长期保留。
+
+## PostgreSQL 数据存储
+
+运行环境通过 `DATABASE_URL` 连接 PostgreSQL，SQLAlchemy 负责连接池、事务和跨数据库的数据访问。用户、商品、订单、政策、会话、Evidence 及资源归属都持久化在 PostgreSQL。测试仍可向 `CatalogRepository` 传入临时 SQLite 路径，因此测试不依赖本机 PostgreSQL，也不会污染开发数据。
+
+本机辅助脚本：
+
+```powershell
+.\scripts\setup_postgres_database.ps1
+.\scripts\configure_postgres_env.ps1
+```
+
+第一个脚本创建项目数据库与最小权限应用账号；第二个脚本验证账号并将连接地址写入 Git 忽略的 `.env`。应用只使用 `commerce_copilot` 账号，不使用 `postgres` 超级用户运行。
+
+当前 Windows 本地安装采用免 Docker 的二进制模式。电脑重启后，先执行 `.\scripts\start_postgres.ps1`；需要停止数据库时执行 `.\scripts\stop_postgres.ps1`。两个脚本都是幂等的，重复执行不会重复启动或停止。
 
 ## Grounding
 

@@ -1,126 +1,36 @@
-import json
 import re
-import sqlite3
 import threading
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Column,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    and_,
+    create_engine,
+    func,
+    insert,
+    select,
+    text,
+)
+from sqlalchemy.engine import Engine, RowMapping
+
 from .catalog import Product, ProductSearchHit
 from .config import get_settings
 from .contracts import ConversationTurn, Evidence, UserRecord
 from .support import OrderItem, OrderRecord, PolicyRecord
 from .security import hash_password
-
-
-SCHEMA_SQL = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY,
-    product_id TEXT NOT NULL UNIQUE,
-    title TEXT NOT NULL,
-    category TEXT NOT NULL,
-    brand TEXT NOT NULL,
-    description TEXT NOT NULL,
-    price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
-    rating REAL NOT NULL CHECK (rating BETWEEN 0 AND 5),
-    review_count INTEGER NOT NULL DEFAULT 0 CHECK (review_count >= 0),
-    stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
-    tags TEXT NOT NULL DEFAULT ''
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS product_fts USING fts5(
-    title,
-    category,
-    brand,
-    description,
-    tags,
-    content='products',
-    content_rowid='id',
-    tokenize='unicode61 remove_diacritics 2'
-);
-
-CREATE TRIGGER IF NOT EXISTS products_after_insert AFTER INSERT ON products BEGIN
-    INSERT INTO product_fts(rowid, title, category, brand, description, tags)
-    VALUES (new.id, new.title, new.category, new.brand, new.description, new.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS products_after_delete AFTER DELETE ON products BEGIN
-    INSERT INTO product_fts(product_fts, rowid, title, category, brand, description, tags)
-    VALUES ('delete', old.id, old.title, old.category, old.brand, old.description, old.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS products_after_update AFTER UPDATE ON products BEGIN
-    INSERT INTO product_fts(product_fts, rowid, title, category, brand, description, tags)
-    VALUES ('delete', old.id, old.title, old.category, old.brand, old.description, old.tags);
-    INSERT INTO product_fts(rowid, title, category, brand, description, tags)
-    VALUES (new.id, new.title, new.category, new.brand, new.description, new.tags);
-END;
-
-CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY,
-    order_id TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL,
-    placed_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS order_items (
-    order_id INTEGER NOT NULL REFERENCES orders(id),
-    product_id INTEGER NOT NULL REFERENCES products(id),
-    quantity INTEGER NOT NULL CHECK (quantity > 0),
-    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
-    PRIMARY KEY (order_id, product_id)
-);
-
-CREATE TABLE IF NOT EXISTS service_policies (
-    id INTEGER PRIMARY KEY,
-    topic TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    effective_from TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS conversation_turns (
-    id INTEGER PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    user_message TEXT NOT NULL,
-    assistant_answer TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS conversation_turns_by_conversation
-ON conversation_turns(conversation_id, id);
-
-CREATE TABLE IF NOT EXISTS conversation_turn_evidence (
-    turn_id INTEGER NOT NULL REFERENCES conversation_turns(id) ON DELETE CASCADE,
-    position INTEGER NOT NULL,
-    source TEXT NOT NULL,
-    reference TEXT NOT NULL,
-    attributes_json TEXT NOT NULL,
-    PRIMARY KEY (turn_id, position)
-);
-
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL UNIQUE,
-    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS order_owners (
-    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    PRIMARY KEY (order_id, user_id)
-);
-
-CREATE TABLE IF NOT EXISTS conversation_owners (
-    conversation_id TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
-);
-"""
 
 
 DEMO_PRODUCTS = (
@@ -206,11 +116,128 @@ KNOWN_TERMS = (
 )
 
 
+metadata = MetaData()
+
+products_table = Table(
+    "products",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("product_id", String(64), nullable=False, unique=True),
+    Column("title", Text, nullable=False),
+    Column("category", String(128), nullable=False),
+    Column("brand", String(128), nullable=False),
+    Column("description", Text, nullable=False),
+    Column("price_cents", Integer, nullable=False),
+    Column("rating", Float, nullable=False),
+    Column("review_count", Integer, nullable=False, server_default="0"),
+    Column("stock", Integer, nullable=False, server_default="0"),
+    Column("tags", Text, nullable=False, server_default=""),
+    CheckConstraint("price_cents >= 0"),
+    CheckConstraint("rating BETWEEN 0 AND 5"),
+    CheckConstraint("review_count >= 0"),
+    CheckConstraint("stock >= 0"),
+)
+
+orders_table = Table(
+    "orders",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("order_id", String(64), nullable=False, unique=True),
+    Column("status", String(64), nullable=False),
+    Column("placed_at", String(32), nullable=False),
+)
+
+order_items_table = Table(
+    "order_items",
+    metadata,
+    Column("order_id", ForeignKey("orders.id"), primary_key=True),
+    Column("product_id", ForeignKey("products.id"), primary_key=True),
+    Column("quantity", Integer, nullable=False),
+    Column("unit_price_cents", Integer, nullable=False),
+    CheckConstraint("quantity > 0"),
+    CheckConstraint("unit_price_cents >= 0"),
+)
+
+service_policies_table = Table(
+    "service_policies",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("topic", String(64), nullable=False),
+    Column("title", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("effective_from", String(32), nullable=False),
+)
+
+conversation_turns_table = Table(
+    "conversation_turns",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("conversation_id", String(64), nullable=False),
+    Column("user_message", Text, nullable=False),
+    Column("assistant_answer", Text, nullable=False),
+    Column("created_at", String(32), nullable=False, server_default=func.current_timestamp()),
+)
+Index(
+    "conversation_turns_by_conversation",
+    conversation_turns_table.c.conversation_id,
+    conversation_turns_table.c.id,
+)
+
+conversation_evidence_table = Table(
+    "conversation_turn_evidence",
+    metadata,
+    Column(
+        "turn_id",
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("position", Integer, primary_key=True),
+    Column("source", String(128), nullable=False),
+    Column("reference", String(256), nullable=False),
+    Column("attributes_json", JSON, nullable=False),
+)
+
+users_table = Table(
+    "users",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", String(64), nullable=False, unique=True),
+    Column("username", String(32), nullable=False),
+    Column("password_hash", Text, nullable=False),
+    Column("created_at", String(32), nullable=False, server_default=func.current_timestamp()),
+)
+Index("users_username_lower_unique", func.lower(users_table.c.username), unique=True)
+
+order_owners_table = Table(
+    "order_owners",
+    metadata,
+    Column("order_id", ForeignKey("orders.id", ondelete="CASCADE"), primary_key=True),
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+)
+
+conversation_owners_table = Table(
+    "conversation_owners",
+    metadata,
+    Column("conversation_id", String(64), primary_key=True),
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+)
+
+
 class CatalogRepository:
-    def __init__(self, path: Path | str):
-        self.path = Path(path)
+    def __init__(self, target: Path | str):
+        self.database_url, self.path = _resolve_database_target(target)
+        connect_args = {"check_same_thread": False} if self.database_url.startswith("sqlite") else {}
+        self.engine: Engine = create_engine(
+            self.database_url,
+            connect_args=connect_args,
+            pool_pre_ping=True,
+        )
         self._ready = False
         self._ready_lock = threading.Lock()
+
+    @property
+    def dialect(self) -> str:
+        return self.engine.dialect.name
 
     def initialize(self) -> None:
         if self._ready:
@@ -218,111 +245,178 @@ class CatalogRepository:
         with self._ready_lock:
             if self._ready:
                 return
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self._connect() as connection:
-                connection.executescript(SCHEMA_SQL)
+            if self.path is not None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            metadata.create_all(self.engine)
+            if self.dialect == "sqlite":
+                self._initialize_sqlite_fts()
             self._ready = True
+
+    def _initialize_sqlite_fts(self) -> None:
+        statements = (
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS product_fts USING fts5(
+                title, category, brand, description, tags,
+                content='products', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS products_after_insert AFTER INSERT ON products BEGIN
+                INSERT INTO product_fts(rowid, title, category, brand, description, tags)
+                VALUES (new.id, new.title, new.category, new.brand, new.description, new.tags);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS products_after_delete AFTER DELETE ON products BEGIN
+                INSERT INTO product_fts(product_fts, rowid, title, category, brand, description, tags)
+                VALUES ('delete', old.id, old.title, old.category, old.brand, old.description, old.tags);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS products_after_update AFTER UPDATE ON products BEGIN
+                INSERT INTO product_fts(product_fts, rowid, title, category, brand, description, tags)
+                VALUES ('delete', old.id, old.title, old.category, old.brand, old.description, old.tags);
+                INSERT INTO product_fts(rowid, title, category, brand, description, tags)
+                VALUES (new.id, new.title, new.category, new.brand, new.description, new.tags);
+            END
+            """,
+        )
+        with self.engine.begin() as connection:
+            for statement in statements:
+                connection.exec_driver_sql(statement)
 
     def seed_products(self, products: Iterable[Product] = DEMO_PRODUCTS) -> None:
         self.initialize()
-        rows = [
-            (
-                product.product_id,
-                product.title,
-                product.category,
-                product.brand,
-                product.description,
-                product.price_cents,
-                product.rating,
-                product.review_count,
-                product.stock,
-                " ".join(product.tags),
-            )
-            for product in products
-        ]
-        with self._connect() as connection:
-            connection.executemany(
-                """
-                INSERT INTO products (
-                    product_id, title, category, brand, description,
-                    price_cents, rating, review_count, stock, tags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(product_id) DO NOTHING
-                """,
-                rows,
-            )
+        with self.engine.begin() as connection:
+            for product in products:
+                existing = connection.scalar(
+                    select(products_table.c.id).where(
+                        products_table.c.product_id == product.product_id
+                    )
+                )
+                if existing is None:
+                    connection.execute(
+                        insert(products_table).values(
+                            product_id=product.product_id,
+                            title=product.title,
+                            category=product.category,
+                            brand=product.brand,
+                            description=product.description,
+                            price_cents=product.price_cents,
+                            rating=product.rating,
+                            review_count=product.review_count,
+                            stock=product.stock,
+                            tags=" ".join(product.tags),
+                        )
+                    )
 
     def seed_support_data(self) -> None:
         self.initialize()
-        with self._connect() as connection:
-            connection.executemany(
-                """
-                INSERT INTO orders (order_id, status, placed_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(order_id) DO NOTHING
-                """,
-                (
-                    ("ORD-2026-1001", "shipped", "2026-10-15 14:30:00"),
-                    ("ORD-2026-1002", "delivered", "2026-10-10 09:20:00"),
-                ),
-            )
-            connection.executemany(
-                """
-                INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents)
-                SELECT o.id, p.id, ?, ?
-                FROM orders AS o, products AS p
-                WHERE o.order_id = ? AND p.product_id = ?
-                ON CONFLICT(order_id, product_id) DO NOTHING
-                """,
-                (
-                    (1, 32900, "ORD-2026-1001", "CP-AUD-101"),
-                    (1, 39900, "ORD-2026-1002", "CP-KEY-201"),
-                ),
-            )
-            connection.executemany(
-                """
-                INSERT INTO service_policies (topic, title, body, effective_from)
-                SELECT ?, ?, ?, ?
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM service_policies WHERE topic = ?
+        order_rows = (
+            ("ORD-2026-1001", "shipped", "2026-10-15 14:30:00"),
+            ("ORD-2026-1002", "delivered", "2026-10-10 09:20:00"),
+        )
+        item_rows = (
+            ("ORD-2026-1001", "CP-AUD-101", 1, 32900),
+            ("ORD-2026-1002", "CP-KEY-201", 1, 39900),
+        )
+        policies = (
+            (
+                "returns",
+                "七日退货规则",
+                "签收后7日内，商品保持完好且配件齐全时可以申请退货；定制和已激活商品除外。",
+                "2026-01-01",
+            ),
+            (
+                "shipping",
+                "发货与物流规则",
+                "现货订单通常在付款后48小时内发出，具体状态以订单查询结果为准。",
+                "2026-01-01",
+            ),
+        )
+        with self.engine.begin() as connection:
+            for order_id, status, placed_at in order_rows:
+                if connection.scalar(
+                    select(orders_table.c.id).where(orders_table.c.order_id == order_id)
+                ) is None:
+                    connection.execute(
+                        insert(orders_table).values(
+                            order_id=order_id,
+                            status=status,
+                            placed_at=placed_at,
+                        )
+                    )
+            for order_id, product_id, quantity, unit_price_cents in item_rows:
+                internal_order_id = connection.scalar(
+                    select(orders_table.c.id).where(orders_table.c.order_id == order_id)
                 )
-                """,
-                (
-                    (
-                        "returns",
-                        "七日退货规则",
-                        "签收后7日内，商品保持完好且配件齐全时可以申请退货；定制和已激活商品除外。",
-                        "2026-01-01",
-                        "returns",
-                    ),
-                    (
-                        "shipping",
-                        "发货与物流规则",
-                        "现货订单通常在付款后48小时内发出，具体状态以订单查询结果为准。",
-                        "2026-01-01",
-                        "shipping",
-                    ),
-                ),
-            )
+                internal_product_id = connection.scalar(
+                    select(products_table.c.id).where(
+                        products_table.c.product_id == product_id
+                    )
+                )
+                if internal_order_id is None or internal_product_id is None:
+                    continue
+                exists = connection.scalar(
+                    select(order_items_table.c.order_id).where(
+                        and_(
+                            order_items_table.c.order_id == internal_order_id,
+                            order_items_table.c.product_id == internal_product_id,
+                        )
+                    )
+                )
+                if exists is None:
+                    connection.execute(
+                        insert(order_items_table).values(
+                            order_id=internal_order_id,
+                            product_id=internal_product_id,
+                            quantity=quantity,
+                            unit_price_cents=unit_price_cents,
+                        )
+                    )
+            for topic, title, body, effective_from in policies:
+                if connection.scalar(
+                    select(service_policies_table.c.id).where(
+                        service_policies_table.c.topic == topic
+                    )
+                ) is None:
+                    connection.execute(
+                        insert(service_policies_table).values(
+                            topic=topic,
+                            title=title,
+                            body=body,
+                            effective_from=effective_from,
+                        )
+                    )
 
     def seed_demo_identity(self) -> None:
         self.initialize()
-        existing = self.get_user_by_username("demo")
-        if existing is None:
-            self.create_user(
-                "demo",
-                hash_password("demo12345"),
-                user_id="user-demo",
+        if self.get_user_by_username("demo") is None:
+            self.create_user("demo", hash_password("demo12345"), user_id="user-demo")
+        with self.engine.begin() as connection:
+            user_key = connection.scalar(
+                select(users_table.c.id).where(users_table.c.user_id == "user-demo")
             )
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO order_owners (order_id, user_id)
-                SELECT o.id, u.id
-                FROM orders AS o, users AS u
-                WHERE u.user_id = 'user-demo'
-                """
-            )
+            if user_key is None:
+                return
+            order_keys = connection.scalars(select(orders_table.c.id)).all()
+            for order_key in order_keys:
+                exists = connection.scalar(
+                    select(order_owners_table.c.order_id).where(
+                        and_(
+                            order_owners_table.c.order_id == order_key,
+                            order_owners_table.c.user_id == user_key,
+                        )
+                    )
+                )
+                if exists is None:
+                    connection.execute(
+                        insert(order_owners_table).values(
+                            order_id=order_key,
+                            user_id=user_key,
+                        )
+                    )
 
     def search_products(
         self,
@@ -333,39 +427,100 @@ class CatalogRepository:
         limit: int = 5,
     ) -> list[ProductSearchHit]:
         self.initialize()
+        if self.dialect == "sqlite":
+            return self._search_products_sqlite(
+                query,
+                max_price_cents=max_price_cents,
+                in_stock_only=in_stock_only,
+                limit=limit,
+            )
+        return self._search_products_postgres(
+            query,
+            max_price_cents=max_price_cents,
+            in_stock_only=in_stock_only,
+            limit=limit,
+        )
+
+    def _search_products_sqlite(
+        self,
+        query: str,
+        *,
+        max_price_cents: int | None,
+        in_stock_only: bool,
+        limit: int,
+    ) -> list[ProductSearchHit]:
         fts_query = _build_fts_query(query)
         if not fts_query:
             return []
-
-        conditions = ["product_fts MATCH ?"]
-        parameters: list[object] = [fts_query]
+        conditions = ["product_fts MATCH :fts_query"]
+        parameters: dict[str, object] = {"fts_query": fts_query, "limit": limit}
         if max_price_cents is not None:
-            conditions.append("p.price_cents <= ?")
-            parameters.append(max_price_cents)
+            conditions.append("p.price_cents <= :max_price_cents")
+            parameters["max_price_cents"] = max_price_cents
         if in_stock_only:
             conditions.append("p.stock > 0")
-        parameters.append(limit)
-
-        statement = f"""
-            SELECT
-                p.product_id, p.title, p.category, p.brand, p.description,
-                p.price_cents, p.rating, p.review_count, p.stock, p.tags,
-                bm25(product_fts, 4.0, 2.0, 1.5, 1.0, 3.0) AS lexical_score
+        statement = text(
+            f"""
+            SELECT p.product_id, p.title, p.category, p.brand, p.description,
+                   p.price_cents, p.rating, p.review_count, p.stock, p.tags,
+                   bm25(product_fts, 4.0, 2.0, 1.5, 1.0, 3.0) AS lexical_score
             FROM product_fts
             JOIN products AS p ON p.id = product_fts.rowid
             WHERE {' AND '.join(conditions)}
             ORDER BY lexical_score ASC, p.rating DESC, p.review_count DESC
-            LIMIT ?
-        """
-        with self._connect() as connection:
-            rows = connection.execute(statement, parameters).fetchall()
+            LIMIT :limit
+            """
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement, parameters).mappings().all()
+        return [_row_to_hit(row) for row in rows]
+
+    def _search_products_postgres(
+        self,
+        query: str,
+        *,
+        max_price_cents: int | None,
+        in_stock_only: bool,
+        limit: int,
+    ) -> list[ProductSearchHit]:
+        terms = _search_terms(query)
+        if not terms:
+            return []
+        document = "LOWER(CONCAT_WS(' ', p.title, p.category, p.brand, p.description, p.tags))"
+        parameters: dict[str, object] = {"limit": limit}
+        term_conditions: list[str] = []
+        score_parts: list[str] = []
+        for index, term in enumerate(terms):
+            key = f"term_{index}"
+            parameters[key] = f"%{term.casefold()}%"
+            term_conditions.append(f"{document} LIKE :{key}")
+            score_parts.append(f"CASE WHEN {document} LIKE :{key} THEN 1 ELSE 0 END")
+        conditions = [f"({' AND '.join(term_conditions)})"]
+        if max_price_cents is not None:
+            conditions.append("p.price_cents <= :max_price_cents")
+            parameters["max_price_cents"] = max_price_cents
+        if in_stock_only:
+            conditions.append("p.stock > 0")
+        score = " + ".join(score_parts)
+        statement = text(
+            f"""
+            SELECT p.product_id, p.title, p.category, p.brand, p.description,
+                   p.price_cents, p.rating, p.review_count, p.stock, p.tags,
+                   -({score})::float AS lexical_score
+            FROM products AS p
+            WHERE {' AND '.join(conditions)}
+            ORDER BY ({score}) DESC, p.rating DESC, p.review_count DESC
+            LIMIT :limit
+            """
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement, parameters).mappings().all()
         return [_row_to_hit(row) for row in rows]
 
     def count_products(self) -> int:
         self.initialize()
-        with self._connect() as connection:
-            row = connection.execute("SELECT COUNT(*) AS total FROM products").fetchone()
-        return int(row["total"])
+        with self.engine.connect() as connection:
+            return int(connection.scalar(select(func.count()).select_from(products_table)) or 0)
 
     def list_products(
         self,
@@ -374,39 +529,22 @@ class CatalogRepository:
         in_stock_only: bool = True,
     ) -> list[Product]:
         self.initialize()
-        conditions: list[str] = []
-        parameters: list[object] = []
+        statement = select(products_table)
         if max_price_cents is not None:
-            conditions.append("price_cents <= ?")
-            parameters.append(max_price_cents)
+            statement = statement.where(products_table.c.price_cents <= max_price_cents)
         if in_stock_only:
-            conditions.append("stock > 0")
-        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT product_id, title, category, brand, description,
-                       price_cents, rating, review_count, stock, tags
-                FROM products
-                {where_clause}
-                ORDER BY product_id
-                """,
-                parameters,
-            ).fetchall()
+            statement = statement.where(products_table.c.stock > 0)
+        statement = statement.order_by(products_table.c.product_id)
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
         return [_row_to_product(row) for row in rows]
 
     def get_product(self, product_id: str) -> Product | None:
         self.initialize()
-        with self._connect() as connection:
+        with self.engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT product_id, title, category, brand, description,
-                       price_cents, rating, review_count, stock, tags
-                FROM products
-                WHERE product_id = ?
-                """,
-                (product_id,),
-            ).fetchone()
+                select(products_table).where(products_table.c.product_id == product_id)
+            ).mappings().first()
         return _row_to_product(row) if row else None
 
     def get_order(
@@ -416,35 +554,36 @@ class CatalogRepository:
         user_id: str | None = None,
     ) -> OrderRecord | None:
         self.initialize()
-        with self._connect() as connection:
-            if user_id is None:
-                order = connection.execute(
-                    "SELECT id, order_id, status, placed_at FROM orders WHERE order_id = ?",
-                    (order_id,),
-                ).fetchone()
-            else:
-                order = connection.execute(
-                    """
-                    SELECT o.id, o.order_id, o.status, o.placed_at
-                    FROM orders AS o
-                    JOIN order_owners AS ownership ON ownership.order_id = o.id
-                    JOIN users AS u ON u.id = ownership.user_id
-                    WHERE o.order_id = ? AND u.user_id = ?
-                    """,
-                    (order_id, user_id),
-                ).fetchone()
+        statement = select(
+            orders_table.c.id,
+            orders_table.c.order_id,
+            orders_table.c.status,
+            orders_table.c.placed_at,
+        ).where(orders_table.c.order_id == order_id)
+        if user_id is not None:
+            statement = (
+                statement.join(
+                    order_owners_table,
+                    order_owners_table.c.order_id == orders_table.c.id,
+                )
+                .join(users_table, users_table.c.id == order_owners_table.c.user_id)
+                .where(users_table.c.user_id == user_id)
+            )
+        with self.engine.connect() as connection:
+            order = connection.execute(statement).mappings().first()
             if order is None:
                 return None
             item_rows = connection.execute(
-                """
-                SELECT p.product_id, p.title, oi.quantity, oi.unit_price_cents
-                FROM order_items AS oi
-                JOIN products AS p ON p.id = oi.product_id
-                WHERE oi.order_id = ?
-                ORDER BY p.product_id
-                """,
-                (order["id"],),
-            ).fetchall()
+                select(
+                    products_table.c.product_id,
+                    products_table.c.title,
+                    order_items_table.c.quantity,
+                    order_items_table.c.unit_price_cents,
+                )
+                .join(products_table, products_table.c.id == order_items_table.c.product_id)
+                .where(order_items_table.c.order_id == order["id"])
+                .order_by(products_table.c.product_id)
+            ).mappings().all()
         return OrderRecord(
             order_id=order["order_id"],
             status=order["status"],
@@ -462,17 +601,13 @@ class CatalogRepository:
 
     def get_policy(self, topic: str) -> PolicyRecord | None:
         self.initialize()
-        with self._connect() as connection:
+        with self.engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT topic, title, body, effective_from
-                FROM service_policies
-                WHERE topic = ?
-                ORDER BY effective_from DESC
-                LIMIT 1
-                """,
-                (topic,),
-            ).fetchone()
+                select(service_policies_table)
+                .where(service_policies_table.c.topic == topic)
+                .order_by(service_policies_table.c.effective_from.desc())
+                .limit(1)
+            ).mappings().first()
         if row is None:
             return None
         return PolicyRecord(
@@ -492,13 +627,13 @@ class CatalogRepository:
         self.initialize()
         active_user_id = user_id or f"user-{uuid4().hex}"
         normalized_username = username.strip()
-        with self._connect() as connection:
+        with self.engine.begin() as connection:
             connection.execute(
-                """
-                INSERT INTO users (user_id, username, password_hash)
-                VALUES (?, ?, ?)
-                """,
-                (active_user_id, normalized_username, password_hash),
+                insert(users_table).values(
+                    user_id=active_user_id,
+                    username=normalized_username,
+                    password_hash=password_hash,
+                )
             )
         return UserRecord(
             user_id=active_user_id,
@@ -508,66 +643,75 @@ class CatalogRepository:
 
     def get_user_by_username(self, username: str) -> UserRecord | None:
         self.initialize()
-        with self._connect() as connection:
+        with self.engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT user_id, username, password_hash
-                FROM users
-                WHERE username = ? COLLATE NOCASE
-                """,
-                (username.strip(),),
-            ).fetchone()
+                select(users_table).where(
+                    func.lower(users_table.c.username) == username.strip().casefold()
+                )
+            ).mappings().first()
         return _row_to_user(row) if row else None
 
     def get_user_by_id(self, user_id: str) -> UserRecord | None:
         self.initialize()
-        with self._connect() as connection:
+        with self.engine.connect() as connection:
             row = connection.execute(
-                """
-                SELECT user_id, username, password_hash
-                FROM users
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ).fetchone()
+                select(users_table).where(users_table.c.user_id == user_id)
+            ).mappings().first()
         return _row_to_user(row) if row else None
 
     def assign_order_to_user(self, order_id: str, user_id: str) -> bool:
         self.initialize()
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO order_owners (order_id, user_id)
-                SELECT o.id, u.id
-                FROM orders AS o, users AS u
-                WHERE o.order_id = ? AND u.user_id = ?
-                """,
-                (order_id, user_id),
+        with self.engine.begin() as connection:
+            order_key = connection.scalar(
+                select(orders_table.c.id).where(orders_table.c.order_id == order_id)
             )
-        return cursor.rowcount > 0
+            user_key = connection.scalar(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            )
+            if order_key is None or user_key is None:
+                return False
+            existing = connection.scalar(
+                select(order_owners_table.c.order_id).where(
+                    and_(
+                        order_owners_table.c.order_id == order_key,
+                        order_owners_table.c.user_id == user_key,
+                    )
+                )
+            )
+            if existing is not None:
+                return False
+            connection.execute(
+                insert(order_owners_table).values(order_id=order_key, user_id=user_key)
+            )
+            return True
 
     def ensure_conversation_owner(self, conversation_id: str, user_id: str) -> bool:
         self.initialize()
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT u.user_id
-                FROM conversation_owners AS ownership
-                JOIN users AS u ON u.id = ownership.user_id
-                WHERE ownership.conversation_id = ?
-                """,
-                (conversation_id,),
-            ).fetchone()
-            if row is not None:
-                return row["user_id"] == user_id
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO conversation_owners (conversation_id, user_id)
-                SELECT ?, id FROM users WHERE user_id = ?
-                """,
-                (conversation_id, user_id),
+        with self.engine.begin() as connection:
+            owner = connection.execute(
+                select(users_table.c.user_id)
+                .select_from(
+                    conversation_owners_table.join(
+                        users_table,
+                        users_table.c.id == conversation_owners_table.c.user_id,
+                    )
+                )
+                .where(conversation_owners_table.c.conversation_id == conversation_id)
+            ).scalar_one_or_none()
+            if owner is not None:
+                return owner == user_id
+            user_key = connection.scalar(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
             )
-        return cursor.rowcount > 0
+            if user_key is None:
+                return False
+            connection.execute(
+                insert(conversation_owners_table).values(
+                    conversation_id=conversation_id,
+                    user_id=user_key,
+                )
+            )
+            return True
 
     def add_conversation_turn(
         self,
@@ -577,33 +721,27 @@ class CatalogRepository:
         evidence: Iterable[Evidence] = (),
     ) -> None:
         self.initialize()
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO conversation_turns (
-                    conversation_id, user_message, assistant_answer
-                ) VALUES (?, ?, ?)
-                """,
-                (conversation_id, user_message, assistant_answer),
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                insert(conversation_turns_table).values(
+                    conversation_id=conversation_id,
+                    user_message=user_message,
+                    assistant_answer=assistant_answer,
+                )
             )
-            turn_id = int(cursor.lastrowid)
-            connection.executemany(
-                """
-                INSERT INTO conversation_turn_evidence (
-                    turn_id, position, source, reference, attributes_json
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    (
-                        turn_id,
-                        position,
-                        item.source,
-                        item.reference,
-                        json.dumps(item.attributes, ensure_ascii=False),
-                    )
-                    for position, item in enumerate(evidence)
-                ),
-            )
+            turn_id = int(result.inserted_primary_key[0])
+            evidence_rows = [
+                {
+                    "turn_id": turn_id,
+                    "position": position,
+                    "source": item.source,
+                    "reference": item.reference,
+                    "attributes_json": item.attributes,
+                }
+                for position, item in enumerate(evidence)
+            ]
+            if evidence_rows:
+                connection.execute(insert(conversation_evidence_table), evidence_rows)
 
     def get_recent_conversation_turns(
         self,
@@ -613,28 +751,20 @@ class CatalogRepository:
     ) -> list[ConversationTurn]:
         self.initialize()
         safe_limit = max(1, min(limit, 20))
-        with self._connect() as connection:
+        with self.engine.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT id, user_message, assistant_answer
-                FROM conversation_turns
-                WHERE conversation_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (conversation_id, safe_limit),
-            ).fetchall()
+                select(conversation_turns_table)
+                .where(conversation_turns_table.c.conversation_id == conversation_id)
+                .order_by(conversation_turns_table.c.id.desc())
+                .limit(safe_limit)
+            ).mappings().all()
             turns: list[ConversationTurn] = []
             for row in reversed(rows):
                 evidence_rows = connection.execute(
-                    """
-                    SELECT source, reference, attributes_json
-                    FROM conversation_turn_evidence
-                    WHERE turn_id = ?
-                    ORDER BY position
-                    """,
-                    (row["id"],),
-                ).fetchall()
+                    select(conversation_evidence_table)
+                    .where(conversation_evidence_table.c.turn_id == row["id"])
+                    .order_by(conversation_evidence_table.c.position)
+                ).mappings().all()
                 turns.append(
                     ConversationTurn(
                         user_message=row["user_message"],
@@ -643,20 +773,13 @@ class CatalogRepository:
                             Evidence(
                                 source=item["source"],
                                 reference=item["reference"],
-                                attributes=json.loads(item["attributes_json"]),
+                                attributes=item["attributes_json"],
                             )
                             for item in evidence_rows
                         ],
                     )
                 )
         return turns
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        return connection
 
 
 def _build_fts_query(query: str) -> str:
@@ -666,14 +789,33 @@ def _build_fts_query(query: str) -> str:
     return " AND ".join(f'"{term}"' for term in dict.fromkeys(terms))
 
 
-def _row_to_hit(row: sqlite3.Row) -> ProductSearchHit:
+def _search_terms(query: str) -> list[str]:
+    lowered = query.casefold()
+    terms = [term for term in KNOWN_TERMS if term in lowered]
+    terms.extend(re.findall(r"[a-z][a-z0-9_-]{1,}", lowered))
+    return list(dict.fromkeys(terms))
+
+
+def _resolve_database_target(target: Path | str) -> tuple[str, Path | None]:
+    if isinstance(target, Path) or "://" not in str(target):
+        path = Path(target).resolve()
+        return f"sqlite:///{path.as_posix()}", path
+    database_url = str(target)
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return database_url, None
+
+
+def _row_to_hit(row: RowMapping) -> ProductSearchHit:
     return ProductSearchHit(
         product=_row_to_product(row),
         lexical_score=row["lexical_score"],
     )
 
 
-def _row_to_product(row: sqlite3.Row) -> Product:
+def _row_to_product(row: RowMapping) -> Product:
     return Product(
         product_id=row["product_id"],
         title=row["title"],
@@ -688,7 +830,7 @@ def _row_to_product(row: sqlite3.Row) -> Product:
     )
 
 
-def _row_to_user(row: sqlite3.Row) -> UserRecord:
+def _row_to_user(row: RowMapping) -> UserRecord:
     return UserRecord(
         user_id=row["user_id"],
         username=row["username"],
@@ -698,7 +840,8 @@ def _row_to_user(row: sqlite3.Row) -> UserRecord:
 
 @lru_cache
 def get_catalog() -> CatalogRepository:
-    repository = CatalogRepository(get_settings().database_path)
+    settings = get_settings()
+    repository = CatalogRepository(settings.database_url or settings.database_path)
     repository.seed_products()
     repository.seed_support_data()
     repository.seed_demo_identity()

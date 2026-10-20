@@ -1,6 +1,5 @@
-import sqlite3
-
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import IntegrityError
 
 from .config import Settings, get_settings
 from .contracts import UserRecord
@@ -55,7 +54,7 @@ class AuthService:
                 credentials.username,
                 hash_password(credentials.password),
             )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise UsernameTakenError("username is already registered") from exc
         return self._response(user)
 
