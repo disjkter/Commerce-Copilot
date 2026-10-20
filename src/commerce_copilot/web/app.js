@@ -7,6 +7,10 @@ const loadingTemplate = document.querySelector("#loading-template");
 const traceEmpty = document.querySelector("#trace-empty");
 const traceContent = document.querySelector("#trace-content");
 const runState = document.querySelector("#run-state");
+const sessionLabel = document.querySelector("#session-label");
+let conversationId = sessionStorage.getItem("commerce_conversation_id");
+
+updateSessionLabel();
 
 const roleMeta = {
   product_scout: { name: "Product Scout", symbol: "PS" },
@@ -33,6 +37,9 @@ input.addEventListener("keydown", (event) => {
 clearButton.addEventListener("click", () => {
   messages.innerHTML = "";
   appendMessage("assistant", "你好，我可以帮你挑选商品，也可以查询订单、物流和退换货政策。");
+  conversationId = null;
+  sessionStorage.removeItem("commerce_conversation_id");
+  updateSessionLabel();
   resetTrace();
   input.focus();
 });
@@ -54,12 +61,15 @@ form.addEventListener("submit", async (event) => {
     const response = await fetch("/v1/turns", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, conversation_id: conversationId }),
     });
     const body = await response.json();
     if (!response.ok) {
       throw new Error(body.detail ? JSON.stringify(body.detail) : `HTTP ${response.status}`);
     }
+    conversationId = body.conversation_id;
+    sessionStorage.setItem("commerce_conversation_id", conversationId);
+    updateSessionLabel();
     loading.remove();
     appendMessage("assistant", body.answer);
     renderTrace(body);
@@ -250,4 +260,10 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function updateSessionLabel() {
+  sessionLabel.textContent = conversationId
+    ? `SESSION · ${conversationId.slice(0, 8).toUpperCase()}`
+    : "NEW SESSION";
 }

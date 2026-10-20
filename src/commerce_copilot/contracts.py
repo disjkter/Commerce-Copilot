@@ -38,9 +38,19 @@ class AgentReport(BaseModel):
     status: str = "completed"
 
 
+class ConversationTurn(BaseModel):
+    user_message: str
+    assistant_answer: str
+
+
 class TurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
-    conversation_id: str | None = None
+    conversation_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
 
 
 class GroundingIssue(BaseModel):
@@ -65,6 +75,7 @@ class TurnTrace(BaseModel):
 
 
 class TurnResponse(BaseModel):
+    conversation_id: str
     answer: str
     reports: list[AgentReport]
     elapsed_ms: float = Field(ge=0)

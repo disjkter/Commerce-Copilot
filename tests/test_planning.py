@@ -3,7 +3,7 @@ import asyncio
 import httpx
 
 from commerce_copilot.config import Settings
-from commerce_copilot.contracts import AgentRole
+from commerce_copilot.contracts import AgentRole, ConversationTurn
 from commerce_copilot.planning import DeepSeekPlanner, local_plan
 
 
@@ -33,6 +33,35 @@ def test_local_plan_understands_budget_without_currency_unit():
     plan = local_plan("我要一款500以下的耳机，顺便帮我看看订单物流")
 
     assert plan.missions[0].parameters["max_price_cents"] == 50000
+
+
+def test_local_plan_resolves_order_reference_from_history():
+    history = [
+        ConversationTurn(
+            user_message="查询订单 ORD-2026-1001",
+            assistant_answer="订单已经发货。",
+        )
+    ]
+
+    plan = local_plan("它现在是什么状态？", history)
+
+    assert plan.missions[0].role == AgentRole.ORDER_CARE
+    assert "ORD-2026-1001" in plan.missions[0].instruction
+
+
+def test_local_plan_keeps_product_budget_for_cheaper_follow_up():
+    history = [
+        ConversationTurn(
+            user_message="推荐500元以下的通勤耳机",
+            assistant_answer="找到了两款耳机。",
+        )
+    ]
+
+    plan = local_plan("再便宜一点", history)
+
+    assert plan.missions[0].role == AgentRole.PRODUCT_SCOUT
+    assert plan.missions[0].parameters["max_price_cents"] == 50000
+    assert plan.missions[0].parameters["sort_by"] == "price_asc"
 
 
 def test_deepseek_json_plan_is_validated():

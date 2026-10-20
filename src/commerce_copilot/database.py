@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .catalog import Product, ProductSearchHit
 from .config import get_settings
+from .contracts import ConversationTurn
 from .support import OrderItem, OrderRecord, PolicyRecord
 
 
@@ -77,6 +78,17 @@ CREATE TABLE IF NOT EXISTS service_policies (
     body TEXT NOT NULL,
     effective_from TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    id INTEGER PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    user_message TEXT NOT NULL,
+    assistant_answer TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS conversation_turns_by_conversation
+ON conversation_turns(conversation_id, id);
 """
 
 
@@ -388,6 +400,50 @@ class CatalogRepository:
             body=row["body"],
             effective_from=row["effective_from"],
         )
+
+    def add_conversation_turn(
+        self,
+        conversation_id: str,
+        user_message: str,
+        assistant_answer: str,
+    ) -> None:
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversation_turns (
+                    conversation_id, user_message, assistant_answer
+                ) VALUES (?, ?, ?)
+                """,
+                (conversation_id, user_message, assistant_answer),
+            )
+
+    def get_recent_conversation_turns(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 6,
+    ) -> list[ConversationTurn]:
+        self.initialize()
+        safe_limit = max(1, min(limit, 20))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT user_message, assistant_answer
+                FROM conversation_turns
+                WHERE conversation_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (conversation_id, safe_limit),
+            ).fetchall()
+        return [
+            ConversationTurn(
+                user_message=row["user_message"],
+                assistant_answer=row["assistant_answer"],
+            )
+            for row in reversed(rows)
+        ]
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)

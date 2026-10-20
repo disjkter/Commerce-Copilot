@@ -21,6 +21,7 @@
 - [x] 订单状态与售后政策真实查询
 - [x] 离线检索评测（Recall@K、Hit Rate@K、MRR）
 - [x] 前端可观测界面
+- [x] conversation_id 多轮会话记忆与上下文追问
 
 ## 架构
 
@@ -100,6 +101,10 @@ Product Scout 的第一阶段检索流程为：
 ## 证据化回答生成
 
 通过 Grounding 的 Agent 报告会交给 DeepSeek 组织自然语言。模型必须同时返回回答和结构化 Claims，每条事实都要标注 Evidence 引用；代码会重新校验引用、字段和值。未知引用、字段缺失、值被修改、接口超时或 JSON 不合法时，系统自动返回确定性的本地答案。响应中的 `trace.answer_source` 和 `trace.composer_error` 用于观察生成来源与降级原因。
+
+## 多轮会话
+
+`POST /v1/turns` 接受可选的 `conversation_id`，未提供时由服务端生成并在响应中返回。每轮用户消息和回答写入 SQLite；Planner 最多读取最近 6 轮，在识别到指代或追问表达时补充上下文。网页会在当前浏览器标签页保存会话编号，点击“清空会话”会开启新的会话。
 
 ## Grounding
 

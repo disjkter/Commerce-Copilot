@@ -37,6 +37,8 @@ async def product_scout(mission: Mission) -> AgentDraft:
         max_price_cents=budget_cents,
         limit=3,
     )
+    if mission.parameters.get("sort_by") == "price_asc":
+        hits.sort(key=lambda hit: (hit.product.price_cents, -hit.product.rating))
     if not hits:
         budget_note = f"且价格不超过 {budget_cents / 100:.0f} 元" if budget_cents else ""
         return (

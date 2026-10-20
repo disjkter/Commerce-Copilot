@@ -1,19 +1,30 @@
+import asyncio
 import operator
 from time import perf_counter
 from typing import Annotated, TypedDict
+from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .agents import execute_mission
 from .answering import DeepSeekAnswerComposer
-from .contracts import AgentReport, GroundingSummary, Mission, TurnResponse, TurnTrace
+from .contracts import (
+    AgentReport,
+    ConversationTurn,
+    GroundingSummary,
+    Mission,
+    TurnResponse,
+    TurnTrace,
+)
+from .database import get_catalog
 from .grounding import validate_reports
 from .planning import DeepSeekPlanner
 
 
 class WorkflowState(TypedDict, total=False):
     message: str
+    history: list[ConversationTurn]
     missions: list[Mission]
     mission: Mission
     reports: Annotated[list[AgentReport], operator.add]
@@ -30,7 +41,10 @@ ANSWER_COMPOSER = DeepSeekAnswerComposer()
 
 
 async def plan(state: WorkflowState) -> dict[str, object]:
-    decision = await PLANNER.create_plan(state["message"].strip())
+    decision = await PLANNER.create_plan(
+        state["message"].strip(),
+        state.get("history", []),
+    )
     return {
         "missions": decision.missions,
         "planning_source": decision.source,
@@ -92,11 +106,23 @@ def build_graph():
 GRAPH = build_graph()
 
 
-async def handle_turn(message: str) -> TurnResponse:
+async def handle_turn(
+    message: str,
+    conversation_id: str | None = None,
+) -> TurnResponse:
     started = perf_counter()
-    result = await GRAPH.ainvoke({"message": message, "reports": []})
+    active_conversation_id = conversation_id or uuid4().hex
+    repository = get_catalog()
+    history = await asyncio.to_thread(
+        repository.get_recent_conversation_turns,
+        active_conversation_id,
+    )
+    result = await GRAPH.ainvoke(
+        {"message": message, "history": history, "reports": []}
+    )
     reports = result.get("reports", [])
-    return TurnResponse(
+    response = TurnResponse(
+        conversation_id=active_conversation_id,
         answer=result["answer"],
         reports=reports,
         elapsed_ms=round((perf_counter() - started) * 1000, 2),
@@ -109,3 +135,11 @@ async def handle_turn(message: str) -> TurnResponse:
             grounding=result["grounding"],
         ),
     )
+    await asyncio.to_thread(
+        repository.add_conversation_turn,
+        active_conversation_id,
+        message,
+        response.answer,
+    )
+    response.elapsed_ms = round((perf_counter() - started) * 1000, 2)
+    return response

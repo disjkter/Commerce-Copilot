@@ -1,4 +1,5 @@
 import asyncio
+from uuid import uuid4
 
 from commerce_copilot.contracts import AgentRole
 from commerce_copilot.orchestrator import handle_turn
@@ -42,6 +43,18 @@ def test_budget_without_yuan_unit_filters_product_results():
         for item in product_report.evidence
     )
     assert all(item.reference != "CP-AUD-103" for item in product_report.evidence)
+
+
+def test_follow_up_uses_persisted_conversation_context():
+    conversation_id = f"test-{uuid4().hex}"
+    asyncio.run(handle_turn("查询订单 ORD-2026-1001", conversation_id))
+
+    result = asyncio.run(handle_turn("它现在是什么状态？", conversation_id))
+
+    assert result.conversation_id == conversation_id
+    assert [report.role for report in result.reports] == [AgentRole.ORDER_CARE]
+    assert "ORD-2026-1001" in result.answer
+    assert "已发货" in result.answer
 
 
 def test_unknown_request_uses_conversation_guide():

@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/turns", response_model=TurnResponse)
     async def create_turn(request: TurnRequest) -> TurnResponse:
-        return await handle_turn(request.message)
+        return await handle_turn(request.message, request.conversation_id)
 
     return app
 

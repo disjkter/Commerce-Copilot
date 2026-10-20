@@ -35,3 +35,15 @@ def test_unknown_term_returns_no_result(tmp_path):
     repository.seed_products()
 
     assert repository.search_products("咖啡机") == []
+
+
+def test_conversation_turns_are_returned_in_chronological_order(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+    repository.add_conversation_turn("session-a", "第一问", "第一答")
+    repository.add_conversation_turn("session-a", "第二问", "第二答")
+    repository.add_conversation_turn("session-b", "其他问题", "其他回答")
+
+    turns = repository.get_recent_conversation_turns("session-a")
+
+    assert [turn.user_message for turn in turns] == ["第一问", "第二问"]
+    assert [turn.assistant_answer for turn in turns] == ["第一答", "第二答"]
