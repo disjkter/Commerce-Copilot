@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Commerce Copilot 多 Agent 电商助手可观测界面" />
+    <title>Commerce Copilot · Agent Console</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Commerce Copilot 首页">
+          <span class="brand-mark" aria-hidden="true">CC</span>
+          <span>
+            <strong>Commerce Copilot</strong>
+            <small>Multi-Agent Commerce Console</small>
+          </span>
+        </a>
+        <div class="system-status">
+          <span class="pulse" aria-hidden="true"></span>
+          <span>LOCAL SYSTEM</span>
+          <a href="/docs" target="_blank" rel="noreferrer">API DOCS ↗</a>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="chat-panel" aria-labelledby="conversation-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">CONVERSATION</p>
+              <h1 id="conversation-title">让多个 Agent 一起解决问题</h1>
+            </div>
+            <button id="clear-button" class="text-button" type="button">清空会话</button>
+          </div>
+
+          <div id="messages" class="messages" aria-live="polite">
+            <article class="message assistant-message">
+              <div class="avatar" aria-hidden="true">AI</div>
+              <div class="message-body">
+                <span class="message-label">COPILOT</span>
+                <p>你好，我可以帮你挑选商品，也可以查询订单、物流和退换货政策。</p>
+              </div>
+            </article>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="examples" aria-label="示例问题">
+              <button type="button" data-example="推荐一款 500 元以内、适合通勤的无线耳机">500 元通勤耳机</button>
+              <button type="button" data-example="查询订单 ORD-2026-1001 的状态和退货政策">订单与退货</button>
+              <button type="button" data-example="推荐静音键盘，同时告诉我发货规则">并发多任务</button>
+            </div>
+            <form id="chat-form" class="composer">
+              <label class="sr-only" for="message-input">输入你的问题</label>
+              <textarea
+                id="message-input"
+                name="message"
+                rows="1"
+                maxlength="4000"
+                placeholder="描述商品需求，或询问订单与售后……"
+                required
+              ></textarea>
+              <button id="send-button" class="send-button" type="submit" aria-label="发送消息">
+                <span>发送</span><span aria-hidden="true">↗</span>
+              </button>
+            </form>
+            <p class="composer-note">Enter 发送 · Shift + Enter 换行 · 回答事实均可追溯到 Evidence</p>
+          </div>
+        </section>
+
+        <aside class="trace-panel" aria-labelledby="trace-title">
+          <div class="trace-header">
+            <div>
+              <p class="eyebrow">EXECUTION TRACE</p>
+              <h2 id="trace-title">运行观察台</h2>
+            </div>
+            <span id="run-state" class="state-badge idle">IDLE</span>
+          </div>
+
+          <div id="trace-empty" class="empty-state">
+            <div class="empty-icon" aria-hidden="true">⌁</div>
+            <strong>等待一次 Agent 运行</strong>
+            <p>发送问题后，这里会展示任务规划、Agent 并发执行、Grounding 和回答生成过程。</p>
+          </div>
+
+          <div id="trace-content" class="trace-content hidden">
+            <section class="metrics" aria-label="运行指标">
+              <div class="metric-card">
+                <span>总耗时</span>
+                <strong id="metric-time">—</strong>
+              </div>
+              <div class="metric-card">
+                <span>Agent 数</span>
+                <strong id="metric-agents">—</strong>
+              </div>
+              <div class="metric-card">
+                <span>事实检查</span>
+                <strong id="metric-claims">—</strong>
+              </div>
+            </section>
+
+            <section class="pipeline-card">
+              <h3>执行链路</h3>
+              <ol class="pipeline">
+                <li>
+                  <span class="step-index">01</span>
+                  <div><small>SUPERVISOR</small><strong>任务规划</strong></div>
+                  <span id="planning-source" class="source-pill">—</span>
+                </li>
+                <li>
+                  <span class="step-index">02</span>
+                  <div><small>FAN-OUT</small><strong>Agent 执行</strong></div>
+                  <span id="agent-status" class="source-pill">—</span>
+                </li>
+                <li>
+                  <span class="step-index">03</span>
+                  <div><small>GROUNDING</small><strong>事实校验</strong></div>
+                  <span id="grounding-status" class="source-pill">—</span>
+                </li>
+                <li>
+                  <span class="step-index">04</span>
+                  <div><small>COMPOSER</small><strong>回答生成</strong></div>
+                  <span id="answer-source" class="source-pill">—</span>
+                </li>
+              </ol>
+            </section>
+
+            <section class="agent-section">
+              <div class="section-title-row">
+                <h3>Agent 报告</h3>
+                <span id="agent-count-label">0 REPORTS</span>
+              </div>
+              <div id="agent-reports" class="agent-reports"></div>
+            </section>
+
+            <section id="error-section" class="error-section hidden">
+              <h3>降级信息</h3>
+              <div id="error-list"></div>
+            </section>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <template id="loading-template">
+      <article class="message assistant-message loading-message">
+        <div class="avatar" aria-hidden="true">AI</div>
+        <div class="message-body">
+          <span class="message-label">AGENTS WORKING</span>
+          <div class="thinking"><span></span><span></span><span></span></div>
+        </div>
+      </article>
+    </template>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

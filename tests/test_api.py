@@ -6,6 +6,18 @@ from commerce_copilot.api import app
 client = TestClient(app)
 
 
+def test_frontend_is_served_with_assets():
+    page = client.get("/")
+    stylesheet = client.get("/assets/styles.css")
+    script = client.get("/assets/app.js")
+
+    assert page.status_code == 200
+    assert "Commerce Copilot" in page.text
+    assert stylesheet.status_code == 200
+    assert script.status_code == 200
+    assert "renderTrace" in script.text
+
+
 def test_health_endpoint():
     response = client.get("/health")
     assert response.status_code == 200

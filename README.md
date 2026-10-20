@@ -20,7 +20,7 @@
 - [x] 结构化 Claim–Evidence Grounding 与失败关闭
 - [x] 订单状态与售后政策真实查询
 - [x] 离线检索评测（Recall@K、Hit Rate@K、MRR）
-- [ ] 前端可观测界面
+- [x] 前端可观测界面
 
 ## 架构
 
@@ -52,7 +52,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m commerce_copilot.main
 ```
 
-打开 `http://127.0.0.1:8010/docs`，调用 `POST /v1/turns`。
+打开 `http://127.0.0.1:8010/` 使用对话与 Agent 可观测界面；`http://127.0.0.1:8010/docs` 提供 API 调试文档。
 
 如需启用 DeepSeek，将 `.env.example` 复制为 `.env`，只在 `.env` 中填写新生成的 `LLM_API_KEY`。没有配置 Key、请求超时或模型输出校验失败时，Supervisor 会自动使用本地规划器，并在响应的 `trace.planning_source` 中标记降级状态。
 
