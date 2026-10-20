@@ -140,6 +140,7 @@ async def handle_turn(
         active_conversation_id,
         message,
         response.answer,
+        [item for report in reports for item in report.evidence],
     )
     response.elapsed_ms = round((perf_counter() - started) * 1000, 2)
     return response

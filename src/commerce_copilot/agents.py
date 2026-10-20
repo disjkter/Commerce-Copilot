@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from time import perf_counter
 
 from .budget import extract_budget_cents
+from .catalog import HybridSearchHit
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
 from .retrieval import get_retriever
@@ -28,6 +29,10 @@ CURRENT_TURN_MARKER = "当前追问："
 
 
 async def product_scout(mission: Mission) -> AgentDraft:
+    selection_error = mission.parameters.get("selection_error")
+    if isinstance(selection_error, str):
+        return selection_error, [], []
+
     product_query = str(mission.parameters.get("product_query", mission.instruction))
     configured_budget = mission.parameters.get("max_price_cents")
     budget_cents = (
@@ -35,12 +40,32 @@ async def product_scout(mission: Mission) -> AgentDraft:
         if isinstance(configured_budget, (int, float))
         else extract_budget_cents(mission.instruction)
     )
-    hits = await asyncio.to_thread(
-        get_retriever().search,
-        product_query,
-        max_price_cents=budget_cents,
-        limit=3,
-    )
+    selected_references = mission.parameters.get("selected_references")
+    if isinstance(selected_references, list) and selected_references:
+        products = await asyncio.gather(
+            *(
+                asyncio.to_thread(get_catalog().get_product, str(reference))
+                for reference in selected_references
+            )
+        )
+        hits = [
+            HybridSearchHit(
+                product=product,
+                fused_score=0,
+                retrieval_sources=["conversation_memory"],
+            )
+            for product in products
+            if product is not None
+            and product.stock > 0
+            and (budget_cents is None or product.price_cents <= budget_cents)
+        ]
+    else:
+        hits = await asyncio.to_thread(
+            get_retriever().search,
+            product_query,
+            max_price_cents=budget_cents,
+            limit=3,
+        )
     if mission.parameters.get("sort_by") == "price_asc":
         hits.sort(key=lambda hit: (hit.product.price_cents, -hit.product.rating))
     if not hits:
@@ -51,7 +76,12 @@ async def product_scout(mission: Mission) -> AgentDraft:
             [],
         )
 
-    lines = ["商品发现任务已完成，找到以下候选："]
+    if isinstance(selected_references, list) and len(selected_references) > 1:
+        lines = ["以下是你指定商品的对比："]
+    elif isinstance(selected_references, list):
+        lines = ["你上一轮提到的商品详情如下："]
+    else:
+        lines = ["商品发现任务已完成，找到以下候选："]
     evidence: list[Evidence] = []
     claims: list[Claim] = []
     for index, hit in enumerate(hits, start=1):

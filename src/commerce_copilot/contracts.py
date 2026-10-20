@@ -41,6 +41,7 @@ class AgentReport(BaseModel):
 class ConversationTurn(BaseModel):
     user_message: str
     assistant_answer: str
+    evidence: list[Evidence] = Field(default_factory=list)
 
 
 class TurnRequest(BaseModel):

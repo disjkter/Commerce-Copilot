@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Literal
 
 import httpx
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .budget import extract_budget_cents
 from .config import Settings, get_settings
-from .contracts import AgentRole, ConversationTurn, Mission
+from .contracts import AgentRole, ConversationTurn, Evidence, Mission
 
 
 PRODUCT_TERMS = ("推荐", "商品", "价格", "预算", "耳机", "电脑", "手机", "键盘", "鼠标", "买")
@@ -27,6 +28,7 @@ class ModelTask(BaseModel):
     product_query: str | None = Field(default=None, max_length=200)
     max_price_yuan: float | None = Field(default=None, ge=0, le=1_000_000)
     preferences: list[str] = Field(default_factory=list, max_length=10)
+    selected_product_references: list[str] = Field(default_factory=list, max_length=3)
 
 
 class ModelPlan(BaseModel):
@@ -40,6 +42,8 @@ conversation_guide 只处理问候或能力咨询。同一个 role 最多出现�
 预算统一输出为人民币元。不要虚构用户没有表达的约束。
 输入可能包含 conversation_history 和 current_message。仅在当前消息存在指代或追问时使用历史，
 例如“它”“那款”“再便宜一点”；不得从无关历史中继承条件或虚构上下文。
+如果用户用“第一款、第二款”等指代历史商品，只能从历史 evidence 中复制对应的 reference 到
+selected_product_references，不得编造商品编号。
 必须只输出 JSON，格式示例：
 {"tasks":[{"role":"product_scout","instruction":"寻找通勤耳机","product_query":"通勤 无线 耳机","max_price_yuan":500,"preferences":["通勤","无线"]}]}
 """
@@ -60,8 +64,17 @@ class DeepSeekPlanner:
             return local_plan(message, recent_history)
         try:
             model_plan = await self._request_model(message, recent_history)
+            allowed_product_references = {
+                item.reference
+                for turn in recent_history
+                for item in turn.evidence
+                if item.source == "local_catalog"
+            }
             return Plan(
-                missions=[_task_to_mission(task) for task in _deduplicate(model_plan.tasks)],
+                missions=[
+                    _task_to_mission(task, allowed_product_references)
+                    for task in _deduplicate(model_plan.tasks)
+                ],
                 source="deepseek",
             )
         except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
@@ -116,11 +129,27 @@ def local_plan(
     normalized = message.strip()
     recent_history = history or []
     previous = recent_history[-1].user_message if recent_history else ""
+    positions = _ordinal_positions(normalized)
+    required_product_count = max(positions, default=1)
+    previous_products = _previous_product_evidence(
+        recent_history,
+        minimum_count=required_product_count,
+    )
+    selected_references = [
+        previous_products[position - 1].reference
+        for position in positions
+        if position <= len(previous_products)
+    ]
+    invalid_positions = [
+        position for position in positions if position > len(previous_products)
+    ]
     has_reference = bool(previous) and any(
         term in normalized for term in REFERENCE_TERMS + PRODUCT_FOLLOW_UP_TERMS
     )
     contextual_text = f"{previous}\n当前追问：{normalized}" if has_reference else normalized
-    product_intent = any(term in normalized for term in PRODUCT_TERMS)
+    product_intent = bool(positions and previous_products) or any(
+        term in normalized for term in PRODUCT_TERMS
+    )
     product_intent = product_intent or (
         has_reference
         and any(term in previous for term in PRODUCT_TERMS)
@@ -138,6 +167,11 @@ def local_plan(
         if budget is None and has_reference:
             budget = extract_budget_cents(previous)
         parameters = {"product_query": contextual_text}
+        if selected_references:
+            parameters["selected_references"] = selected_references
+        if invalid_positions:
+            missing = "、".join(str(position) for position in invalid_positions)
+            parameters["selection_error"] = f"上一轮结果中没有第 {missing} 款商品。"
         if budget is not None:
             parameters["max_price_cents"] = budget
         if "便宜" in normalized:
@@ -156,7 +190,10 @@ def local_plan(
     return Plan(missions=missions, source="local")
 
 
-def _task_to_mission(task: ModelTask) -> Mission:
+def _task_to_mission(
+    task: ModelTask,
+    allowed_product_references: set[str] | None = None,
+) -> Mission:
     parameters: dict[str, object] = {}
     if task.role == AgentRole.PRODUCT_SCOUT:
         parameters["product_query"] = task.product_query or task.instruction
@@ -164,6 +201,13 @@ def _task_to_mission(task: ModelTask) -> Mission:
             parameters["max_price_cents"] = round(task.max_price_yuan * 100)
         if task.preferences:
             parameters["preferences"] = task.preferences
+        selected_references = [
+            reference
+            for reference in task.selected_product_references
+            if reference in (allowed_product_references or set())
+        ]
+        if selected_references:
+            parameters["selected_references"] = selected_references
     return Mission(role=task.role, instruction=task.instruction, parameters=parameters)
 
 
@@ -172,3 +216,20 @@ def _deduplicate(tasks: list[ModelTask]) -> list[ModelTask]:
     for task in tasks:
         by_role.setdefault(task.role, task)
     return list(by_role.values())
+
+
+def _ordinal_positions(text: str) -> list[int]:
+    number_map = {"一": 1, "二": 2, "三": 3, "1": 1, "2": 2, "3": 3}
+    return [number_map[value] for value in re.findall(r"第\s*([一二三123])\s*款", text)]
+
+
+def _previous_product_evidence(
+    history: list[ConversationTurn],
+    *,
+    minimum_count: int = 1,
+) -> list[Evidence]:
+    for turn in reversed(history):
+        products = [item for item in turn.evidence if item.source == "local_catalog"]
+        if len(products) >= minimum_count:
+            return products
+    return []

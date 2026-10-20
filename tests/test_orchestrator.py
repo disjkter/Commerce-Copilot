@@ -57,6 +57,45 @@ def test_follow_up_uses_persisted_conversation_context():
     assert "已发货" in result.answer
 
 
+def test_product_ordinal_uses_previous_evidence_order():
+    conversation_id = f"product-{uuid4().hex}"
+    first = asyncio.run(
+        handle_turn("推荐500元以下的通勤耳机", conversation_id)
+    )
+    first_products = next(
+        report.evidence
+        for report in first.reports
+        if report.role == AgentRole.PRODUCT_SCOUT
+    )
+
+    second = asyncio.run(handle_turn("第二款怎么样？", conversation_id))
+    selected_products = next(
+        report.evidence
+        for report in second.reports
+        if report.role == AgentRole.PRODUCT_SCOUT
+    )
+
+    assert len(selected_products) == 1
+    assert selected_products[0].reference == first_products[1].reference
+    assert selected_products[0].attributes["retrieval_sources"] == [
+        "conversation_memory"
+    ]
+
+    comparison = asyncio.run(
+        handle_turn("第一款和第二款对比一下", conversation_id)
+    )
+    compared_products = next(
+        report.evidence
+        for report in comparison.reports
+        if report.role == AgentRole.PRODUCT_SCOUT
+    )
+
+    assert [item.reference for item in compared_products] == [
+        first_products[0].reference,
+        first_products[1].reference,
+    ]
+
+
 def test_unknown_request_uses_conversation_guide():
     result = asyncio.run(handle_turn("你好"))
 

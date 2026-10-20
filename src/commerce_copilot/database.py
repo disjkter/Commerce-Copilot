@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 import threading
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from .catalog import Product, ProductSearchHit
 from .config import get_settings
-from .contracts import ConversationTurn
+from .contracts import ConversationTurn, Evidence
 from .support import OrderItem, OrderRecord, PolicyRecord
 
 
@@ -89,6 +90,15 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 
 CREATE INDEX IF NOT EXISTS conversation_turns_by_conversation
 ON conversation_turns(conversation_id, id);
+
+CREATE TABLE IF NOT EXISTS conversation_turn_evidence (
+    turn_id INTEGER NOT NULL REFERENCES conversation_turns(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    reference TEXT NOT NULL,
+    attributes_json TEXT NOT NULL,
+    PRIMARY KEY (turn_id, position)
+);
 """
 
 
@@ -345,6 +355,20 @@ class CatalogRepository:
             ).fetchall()
         return [_row_to_product(row) for row in rows]
 
+    def get_product(self, product_id: str) -> Product | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT product_id, title, category, brand, description,
+                       price_cents, rating, review_count, stock, tags
+                FROM products
+                WHERE product_id = ?
+                """,
+                (product_id,),
+            ).fetchone()
+        return _row_to_product(row) if row else None
+
     def get_order(self, order_id: str) -> OrderRecord | None:
         self.initialize()
         with self._connect() as connection:
@@ -406,16 +430,35 @@ class CatalogRepository:
         conversation_id: str,
         user_message: str,
         assistant_answer: str,
+        evidence: Iterable[Evidence] = (),
     ) -> None:
         self.initialize()
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO conversation_turns (
                     conversation_id, user_message, assistant_answer
                 ) VALUES (?, ?, ?)
                 """,
                 (conversation_id, user_message, assistant_answer),
+            )
+            turn_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO conversation_turn_evidence (
+                    turn_id, position, source, reference, attributes_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        turn_id,
+                        position,
+                        item.source,
+                        item.reference,
+                        json.dumps(item.attributes, ensure_ascii=False),
+                    )
+                    for position, item in enumerate(evidence)
+                ),
             )
 
     def get_recent_conversation_turns(
@@ -429,7 +472,7 @@ class CatalogRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT user_message, assistant_answer
+                SELECT id, user_message, assistant_answer
                 FROM conversation_turns
                 WHERE conversation_id = ?
                 ORDER BY id DESC
@@ -437,13 +480,32 @@ class CatalogRepository:
                 """,
                 (conversation_id, safe_limit),
             ).fetchall()
-        return [
-            ConversationTurn(
-                user_message=row["user_message"],
-                assistant_answer=row["assistant_answer"],
-            )
-            for row in reversed(rows)
-        ]
+            turns: list[ConversationTurn] = []
+            for row in reversed(rows):
+                evidence_rows = connection.execute(
+                    """
+                    SELECT source, reference, attributes_json
+                    FROM conversation_turn_evidence
+                    WHERE turn_id = ?
+                    ORDER BY position
+                    """,
+                    (row["id"],),
+                ).fetchall()
+                turns.append(
+                    ConversationTurn(
+                        user_message=row["user_message"],
+                        assistant_answer=row["assistant_answer"],
+                        evidence=[
+                            Evidence(
+                                source=item["source"],
+                                reference=item["reference"],
+                                attributes=json.loads(item["attributes_json"]),
+                            )
+                            for item in evidence_rows
+                        ],
+                    )
+                )
+        return turns
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)

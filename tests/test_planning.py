@@ -3,7 +3,7 @@ import asyncio
 import httpx
 
 from commerce_copilot.config import Settings
-from commerce_copilot.contracts import AgentRole, ConversationTurn
+from commerce_copilot.contracts import AgentRole, ConversationTurn, Evidence
 from commerce_copilot.planning import DeepSeekPlanner, local_plan
 
 
@@ -64,6 +64,24 @@ def test_local_plan_keeps_product_budget_for_cheaper_follow_up():
     assert plan.missions[0].parameters["sort_by"] == "price_asc"
 
 
+def test_local_plan_resolves_second_product_from_ordered_evidence():
+    history = [
+        ConversationTurn(
+            user_message="推荐通勤耳机",
+            assistant_answer="找到两款商品",
+            evidence=[
+                Evidence(source="local_catalog", reference="CP-AUD-102"),
+                Evidence(source="local_catalog", reference="CP-AUD-101"),
+            ],
+        )
+    ]
+
+    plan = local_plan("第二款怎么样？", history)
+
+    assert plan.missions[0].role == AgentRole.PRODUCT_SCOUT
+    assert plan.missions[0].parameters["selected_references"] == ["CP-AUD-101"]
+
+
 def test_deepseek_json_plan_is_validated():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"
@@ -75,7 +93,8 @@ def test_deepseek_json_plan_is_validated():
                         "message": {
                             "content": '{"tasks":[{"role":"product_scout",'
                             '"instruction":"寻找通勤耳机","product_query":"通勤 无线 耳机",'
-                            '"max_price_yuan":500,"preferences":["通勤"]}]}'
+                            '"max_price_yuan":500,"preferences":["通勤"],'
+                            '"selected_product_references":["INVENTED-ID"]}]}'
                         }
                     }
                 ]
@@ -87,6 +106,7 @@ def test_deepseek_json_plan_is_validated():
 
     assert plan.source == "deepseek"
     assert plan.missions[0].parameters["max_price_cents"] == 50000
+    assert "selected_references" not in plan.missions[0].parameters
 
 
 def test_invalid_model_output_falls_back_locally():

@@ -1,4 +1,5 @@
 from commerce_copilot.database import CatalogRepository
+from commerce_copilot.contracts import Evidence
 
 
 def test_seed_is_idempotent(tmp_path):
@@ -47,3 +48,24 @@ def test_conversation_turns_are_returned_in_chronological_order(tmp_path):
 
     assert [turn.user_message for turn in turns] == ["第一问", "第二问"]
     assert [turn.assistant_answer for turn in turns] == ["第一答", "第二答"]
+
+
+def test_conversation_turn_preserves_ordered_evidence(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+    evidence = [
+        Evidence(
+            source="local_catalog",
+            reference="CP-AUD-102",
+            attributes={"title": "潮汐 Buds 2 降噪耳机"},
+        ),
+        Evidence(
+            source="local_catalog",
+            reference="CP-AUD-101",
+            attributes={"title": "云雀 Lite 通勤蓝牙耳机"},
+        ),
+    ]
+
+    repository.add_conversation_turn("session-a", "推荐耳机", "两款商品", evidence)
+    turn = repository.get_recent_conversation_turns("session-a")[0]
+
+    assert [item.reference for item in turn.evidence] == ["CP-AUD-102", "CP-AUD-101"]
