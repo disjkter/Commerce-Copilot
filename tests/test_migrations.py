@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "users",
     "order_owners",
     "conversation_owners",
+    "user_preferences",
 }
 
 

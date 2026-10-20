@@ -24,12 +24,13 @@ from sqlalchemy import (
     insert,
     select,
     text,
+    update,
 )
 from sqlalchemy.engine import Engine, RowMapping
 
 from .catalog import Product, ProductSearchHit
 from .config import get_settings
-from .contracts import ConversationTurn, Evidence, UserRecord
+from .contracts import ConversationTurn, Evidence, UserPreferences, UserRecord
 from .support import OrderItem, OrderRecord, PolicyRecord
 from .security import hash_password
 
@@ -221,6 +222,23 @@ conversation_owners_table = Table(
     metadata,
     Column("conversation_id", String(64), primary_key=True),
     Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+)
+
+user_preferences_table = Table(
+    "user_preferences",
+    metadata,
+    Column(
+        "user_id",
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("max_budget_cents", Integer),
+    Column("preferred_categories", JSON, nullable=False),
+    Column("preferred_brands", JSON, nullable=False),
+    Column("scenarios", JSON, nullable=False),
+    Column("priorities", JSON, nullable=False),
+    Column("updated_at", String(32), nullable=False, server_default=func.current_timestamp()),
+    CheckConstraint("max_budget_cents IS NULL OR max_budget_cents >= 0"),
 )
 
 
@@ -663,6 +681,63 @@ class CatalogRepository:
                 select(users_table).where(users_table.c.user_id == user_id)
             ).mappings().first()
         return _row_to_user(row) if row else None
+
+    def get_user_preferences(self, user_id: str) -> UserPreferences:
+        self.initialize()
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(user_preferences_table)
+                .select_from(
+                    user_preferences_table.join(
+                        users_table,
+                        users_table.c.id == user_preferences_table.c.user_id,
+                    )
+                )
+                .where(users_table.c.user_id == user_id)
+            ).mappings().first()
+        if row is None:
+            return UserPreferences()
+        return UserPreferences(
+            max_budget_cents=row["max_budget_cents"],
+            preferred_categories=row["preferred_categories"],
+            preferred_brands=row["preferred_brands"],
+            scenarios=row["scenarios"],
+            priorities=row["priorities"],
+        )
+
+    def save_user_preferences(
+        self,
+        user_id: str,
+        preferences: UserPreferences,
+    ) -> UserPreferences:
+        self.initialize()
+        values = preferences.model_dump()
+        values["updated_at"] = func.current_timestamp()
+        with self.engine.begin() as connection:
+            user_key = connection.scalar(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            )
+            if user_key is None:
+                raise ValueError("user does not exist")
+            existing = connection.scalar(
+                select(user_preferences_table.c.user_id).where(
+                    user_preferences_table.c.user_id == user_key
+                )
+            )
+            if existing is None:
+                connection.execute(
+                    insert(user_preferences_table).values(
+                        user_id=user_key,
+                        **values,
+                    )
+                )
+            else:
+                connection.execute(
+                    update(user_preferences_table)
+                    .where(user_preferences_table.c.user_id == user_key)
+                    .values(**values)
+                )
+        return preferences
 
     def assign_order_to_user(self, order_id: str, user_id: str) -> bool:
         self.initialize()

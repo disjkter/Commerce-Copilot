@@ -16,7 +16,7 @@ from .auth import (
     UsernameTakenError,
 )
 from .config import get_settings
-from .contracts import TurnRequest, TurnResponse
+from .contracts import TurnRequest, TurnResponse, UserPreferences
 from .database import get_catalog
 from .orchestrator import handle_turn
 from .security import InvalidTokenError, decode_access_token
@@ -93,6 +93,26 @@ def create_app() -> FastAPI:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.get("/v1/me/preferences", response_model=UserPreferences)
+    async def get_preferences(
+        user: Annotated[PublicUser, Depends(require_user)],
+    ) -> UserPreferences:
+        return await asyncio.to_thread(
+            get_catalog().get_user_preferences,
+            user.user_id,
+        )
+
+    @app.put("/v1/me/preferences", response_model=UserPreferences)
+    async def update_preferences(
+        preferences: UserPreferences,
+        user: Annotated[PublicUser, Depends(require_user)],
+    ) -> UserPreferences:
+        return await asyncio.to_thread(
+            get_catalog().save_user_preferences,
+            user.user_id,
+            preferences,
+        )
 
     return app
 

@@ -23,6 +23,7 @@
 - [x] 前端可观测界面
 - [x] conversation_id 多轮会话记忆与上下文追问
 - [x] 用户注册登录、签名 Token、订单与会话归属校验
+- [x] 用户偏好持久化与个性化商品检索
 
 ## 架构
 
@@ -83,7 +84,7 @@ py -3.12 -m venv .venv
 
 ## 数据层
 
-数据库默认写入 `runtime/commerce.db`。首次商品检索时，系统会自动创建商品、订单、订单项和服务政策表，并导入一组原创演示商品；运行时数据库文件不会提交到 Git。
+配置 `DATABASE_URL` 后运行数据写入 PostgreSQL；未配置时使用 `runtime/commerce.db` 方便快速体验。首次商品检索时系统会导入一组原创演示商品；运行时数据库文件不会提交到 Git。
 
 Product Scout 的第一阶段检索流程为：
 
@@ -118,6 +119,12 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 ## 用户鉴权
 
 `POST /v1/auth/register` 和 `POST /v1/auth/login` 接收 JSON 用户名与密码，密码使用带随机盐的 PBKDF2-SHA256 哈希保存。登录返回带过期时间和 HMAC-SHA256 签名的 Bearer Token；`POST /v1/turns` 必须携带该 Token。订单查询同时校验订单归属，会话编号在首次使用时绑定当前用户，其他用户复用该编号会得到 `403`。网页将 Token 保存在当前标签页的 `sessionStorage`，关闭标签页后不会长期保留。
+
+## 用户偏好与个性化
+
+登录用户可以通过 `GET /v1/me/preferences` 读取偏好，通过 `PUT /v1/me/preferences` 保存预算、偏好品类、品牌、使用场景和关注点。偏好存入 PostgreSQL 的 `user_preferences` 表，不依赖进程内存。
+
+Supervisor 只用历史偏好补充本轮缺失的条件：用户本轮明确说出的预算或品类具有更高优先级；“第一款”等直接商品指代不会被历史偏好再次过滤。实际采用的偏好会出现在响应的 `trace.applied_preferences` 中，方便调试个性化行为。可在 `http://127.0.0.1:8010/docs` 中登录后直接试用这两个接口。
 
 ## PostgreSQL 数据存储
 

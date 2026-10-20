@@ -1,5 +1,5 @@
 from commerce_copilot.database import CatalogRepository
-from commerce_copilot.contracts import Evidence
+from commerce_copilot.contracts import Evidence, UserPreferences
 from commerce_copilot.security import hash_password
 
 
@@ -82,3 +82,25 @@ def test_order_lookup_enforces_user_ownership(tmp_path):
 
     assert repository.get_order("ORD-2026-1001", user_id=owner.user_id) is not None
     assert repository.get_order("ORD-2026-1001", user_id=other.user_id) is None
+
+
+def test_user_preferences_are_persisted_and_replaced(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+    user = repository.create_user("preference-owner", hash_password("password-123"))
+
+    assert repository.get_user_preferences(user.user_id) == UserPreferences()
+
+    first = UserPreferences(
+        max_budget_cents=50000,
+        preferred_categories=["耳机"],
+        scenarios=["通勤"],
+    )
+    repository.save_user_preferences(user.user_id, first)
+    assert repository.get_user_preferences(user.user_id) == first
+
+    replacement = UserPreferences(
+        max_budget_cents=40000,
+        priorities=["轻量"],
+    )
+    repository.save_user_preferences(user.user_id, replacement)
+    assert repository.get_user_preferences(user.user_id) == replacement

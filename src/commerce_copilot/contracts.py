@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AgentRole(StrEnum):
@@ -50,6 +50,34 @@ class UserRecord(BaseModel):
     password_hash: str
 
 
+class UserPreferences(BaseModel):
+    max_budget_cents: int | None = Field(default=None, ge=0)
+    preferred_categories: list[str] = Field(default_factory=list, max_length=10)
+    preferred_brands: list[str] = Field(default_factory=list, max_length=10)
+    scenarios: list[str] = Field(default_factory=list, max_length=10)
+    priorities: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator(
+        "preferred_categories",
+        "preferred_brands",
+        "scenarios",
+        "priorities",
+        mode="before",
+    )
+    @classmethod
+    def normalize_terms(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("preference terms must be a list")
+        normalized: list[str] = []
+        for item in value:
+            term = str(item).strip()
+            if term and term not in normalized:
+                normalized.append(term)
+        return normalized
+
+
 class TurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     conversation_id: str | None = Field(
@@ -78,6 +106,7 @@ class TurnTrace(BaseModel):
     selected_agents: list[AgentRole]
     planner_error: str | None = None
     composer_error: str | None = None
+    applied_preferences: dict[str, Any] = Field(default_factory=dict)
     grounding: GroundingSummary
 
 

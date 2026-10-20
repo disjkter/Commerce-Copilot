@@ -77,12 +77,25 @@ async def product_scout(mission: Mission) -> AgentDraft:
             [],
         )
 
-    if isinstance(selected_references, list) and len(selected_references) > 1:
-        lines = ["以下是你指定商品的对比："]
-    elif isinstance(selected_references, list):
-        lines = ["你上一轮提到的商品详情如下："]
+    applied_preferences = mission.parameters.get("applied_preferences")
+    if isinstance(applied_preferences, dict) and applied_preferences:
+        applied_values = [
+            f"预算不超过 {value / 100:.0f} 元"
+            if key == "max_budget_cents" and isinstance(value, (int, float))
+            else "、".join(str(item) for item in value)
+            for key, value in applied_preferences.items()
+            if value
+        ]
+        lines = [f"已结合你的账户偏好：{'；'.join(applied_values)}。"]
     else:
-        lines = ["商品发现任务已完成，找到以下候选："]
+        lines = []
+
+    if isinstance(selected_references, list) and len(selected_references) > 1:
+        lines.append("以下是你指定商品的对比：")
+    elif isinstance(selected_references, list):
+        lines.append("你上一轮提到的商品详情如下：")
+    else:
+        lines.append("商品发现任务已完成，找到以下候选：")
     evidence: list[Evidence] = []
     claims: list[Claim] = []
     for index, hit in enumerate(hits, start=1):

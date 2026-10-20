@@ -16,16 +16,19 @@ from .contracts import (
     Mission,
     TurnResponse,
     TurnTrace,
+    UserPreferences,
 )
 from .database import get_catalog
 from .grounding import validate_reports
 from .planning import DeepSeekPlanner
+from .personalization import personalize_mission
 
 
 class WorkflowState(TypedDict, total=False):
     message: str
     user_id: str
     history: list[ConversationTurn]
+    preferences: UserPreferences
     missions: list[Mission]
     mission: Mission
     reports: Annotated[list[AgentReport], operator.add]
@@ -47,13 +50,16 @@ async def plan(state: WorkflowState) -> dict[str, object]:
         state.get("history", []),
     )
     missions = [
-        mission.model_copy(
-            update={
-                "parameters": {
-                    **mission.parameters,
-                    "user_id": state["user_id"],
+        personalize_mission(
+            mission.model_copy(
+                update={
+                    "parameters": {
+                        **mission.parameters,
+                        "user_id": state["user_id"],
+                    }
                 }
-            }
+            ),
+            state.get("preferences", UserPreferences()),
         )
         for mission in decision.missions
     ]
@@ -138,11 +144,16 @@ async def handle_turn(
         repository.get_recent_conversation_turns,
         active_conversation_id,
     )
+    preferences = await asyncio.to_thread(
+        repository.get_user_preferences,
+        user_id,
+    )
     result = await GRAPH.ainvoke(
         {
             "message": message,
             "user_id": user_id,
             "history": history,
+            "preferences": preferences,
             "reports": [],
         }
     )
@@ -158,6 +169,9 @@ async def handle_turn(
             selected_agents=[report.role for report in reports],
             planner_error=result.get("planner_error"),
             composer_error=result.get("composer_error"),
+            applied_preferences=_collect_applied_preferences(
+                result.get("missions", [])
+            ),
             grounding=result["grounding"],
         ),
     )
@@ -170,3 +184,12 @@ async def handle_turn(
     )
     response.elapsed_ms = round((perf_counter() - started) * 1000, 2)
     return response
+
+
+def _collect_applied_preferences(missions: list[Mission]) -> dict[str, object]:
+    applied: dict[str, object] = {}
+    for mission in missions:
+        values = mission.parameters.get("applied_preferences")
+        if isinstance(values, dict):
+            applied.update(values)
+    return applied

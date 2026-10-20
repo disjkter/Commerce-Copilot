@@ -116,3 +116,39 @@ def test_conversation_cannot_be_reused_by_another_user():
 
     assert owner_response.status_code == 200
     assert intruder_response.status_code == 403
+
+
+def test_authenticated_user_can_save_preferences():
+    username = f"prefs_{uuid4().hex[:10]}"
+    registration = client.post(
+        "/v1/auth/register",
+        json={"username": username, "password": "safe-password-123"},
+    ).json()
+    headers = {"Authorization": f"Bearer {registration['access_token']}"}
+    preferences = {
+        "max_budget_cents": 50000,
+        "preferred_categories": ["耳机", "耳机", "  "],
+        "preferred_brands": [],
+        "scenarios": ["通勤"],
+        "priorities": ["降噪"],
+    }
+
+    saved = client.put("/v1/me/preferences", headers=headers, json=preferences)
+    loaded = client.get("/v1/me/preferences", headers=headers)
+
+    assert saved.status_code == 200
+    assert saved.json()["preferred_categories"] == ["耳机"]
+    assert loaded.json() == saved.json()
+
+    turn = client.post(
+        "/v1/turns",
+        headers=headers,
+        json={"message": "推荐商品"},
+    )
+    assert turn.status_code == 200
+    assert turn.json()["trace"]["applied_preferences"] == {
+        "max_budget_cents": 50000,
+        "preferred_categories": ["耳机"],
+        "scenarios": ["通勤"],
+        "priorities": ["降噪"],
+    }
