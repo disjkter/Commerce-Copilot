@@ -134,6 +134,22 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 
 当前 Windows 本地安装采用免 Docker 的二进制模式。电脑重启后，先执行 `.\scripts\start_postgres.ps1`；需要停止数据库时执行 `.\scripts\stop_postgres.ps1`。两个脚本都是幂等的，重复执行不会重复启动或停止。
 
+数据库表结构由 Alembic 管理。首次创建项目数据库或拉取到新的迁移文件后执行：
+
+```powershell
+.\scripts\migrate_database.ps1
+```
+
+也可以直接运行：
+
+```powershell
+python -m alembic upgrade head
+python -m alembic current
+python -m alembic check
+```
+
+`upgrade head` 将数据库升级到最新版本，`current` 显示当前版本，`check` 检查 SQLAlchemy 模型是否存在尚未生成的结构变化。PostgreSQL 运行时不会再调用 `metadata.create_all()` 偷偷修改表结构；如果没有执行迁移，应用会明确提示先运行 `alembic upgrade head`。测试使用临时 SQLite，并会验证第一版迁移可以从空数据库完整升级和回滚。
+
 ## Grounding
 
 领域 Agent 在生成回复时同步输出结构化 Claim。Composer 在返回答案前，将每条 Claim 的引用编号、字段和值与 Evidence 对齐；缺少证据、缺少字段或值不一致都会产生 Grounding Issue。未通过校验的 Agent 报告不会进入最终回答，但其他并发分支的有效结果仍可保留。

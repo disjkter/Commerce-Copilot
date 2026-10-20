@@ -20,6 +20,7 @@ from sqlalchemy import (
     and_,
     create_engine,
     func,
+    inspect,
     insert,
     select,
     text,
@@ -247,9 +248,13 @@ class CatalogRepository:
                 return
             if self.path is not None:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-            metadata.create_all(self.engine)
             if self.dialect == "sqlite":
+                metadata.create_all(self.engine)
                 self._initialize_sqlite_fts()
+            elif not inspect(self.engine).has_table("products"):
+                raise RuntimeError(
+                    "PostgreSQL schema is missing; run `alembic upgrade head` first"
+                )
             self._ready = True
 
     def _initialize_sqlite_fts(self) -> None:
