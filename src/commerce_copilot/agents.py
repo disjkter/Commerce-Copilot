@@ -3,6 +3,7 @@ import re
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 
+from .budget import extract_budget_cents
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
 from .retrieval import get_retriever
@@ -28,7 +29,7 @@ async def product_scout(mission: Mission) -> AgentDraft:
     budget_cents = (
         int(configured_budget)
         if isinstance(configured_budget, (int, float))
-        else _extract_budget_cents(mission.instruction)
+        else extract_budget_cents(mission.instruction)
     )
     hits = await asyncio.to_thread(
         get_retriever().search,
@@ -198,21 +199,6 @@ async def execute_mission(mission: Mission) -> AgentReport:
         elapsed_ms=round((perf_counter() - started) * 1000, 2),
         status=status,
     )
-
-
-def _extract_budget_cents(text: str) -> int | None:
-    patterns = (
-        r"预算\s*(\d+(?:\.\d+)?)",
-        r"(\d+(?:\.\d+)?)\s*元(?:以内|以下|之内)",
-        r"不超过\s*(\d+(?:\.\d+)?)",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return round(float(match.group(1)) * 100)
-    return None
-
-
 def _policy_topic(text: str) -> str | None:
     if any(term in text for term in RETURN_TERMS):
         return "returns"

@@ -29,6 +29,12 @@ def test_local_plan_extracts_parallel_tasks_and_budget():
     assert plan.missions[0].parameters["max_price_cents"] == 50000
 
 
+def test_local_plan_understands_budget_without_currency_unit():
+    plan = local_plan("我要一款500以下的耳机，顺便帮我看看订单物流")
+
+    assert plan.missions[0].parameters["max_price_cents"] == 50000
+
+
 def test_deepseek_json_plan_is_validated():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"

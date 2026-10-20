@@ -30,6 +30,20 @@ def test_mixed_request_fans_out_to_two_agents():
     assert "请提供" in result.answer
 
 
+def test_budget_without_yuan_unit_filters_product_results():
+    result = asyncio.run(handle_turn("我要一款500以下的耳机，顺便帮我看看订单物流"))
+    product_report = next(
+        report for report in result.reports if report.role == AgentRole.PRODUCT_SCOUT
+    )
+
+    assert product_report.evidence
+    assert all(
+        item.attributes["price_cents"] <= 50000
+        for item in product_report.evidence
+    )
+    assert all(item.reference != "CP-AUD-103" for item in product_report.evidence)
+
+
 def test_unknown_request_uses_conversation_guide():
     result = asyncio.run(handle_turn("你好"))
 

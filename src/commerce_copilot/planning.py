@@ -1,10 +1,10 @@
 import json
-import re
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from .budget import extract_budget_cents
 from .config import Settings, get_settings
 from .contracts import AgentRole, Mission
 
@@ -89,7 +89,7 @@ def local_plan(message: str) -> Plan:
     normalized = message.strip()
     missions: list[Mission] = []
     if any(term in normalized for term in PRODUCT_TERMS):
-        budget = _extract_budget_cents(normalized)
+        budget = extract_budget_cents(normalized)
         parameters = {"product_query": normalized}
         if budget is not None:
             parameters["max_price_cents"] = budget
@@ -123,16 +123,3 @@ def _deduplicate(tasks: list[ModelTask]) -> list[ModelTask]:
     for task in tasks:
         by_role.setdefault(task.role, task)
     return list(by_role.values())
-
-
-def _extract_budget_cents(text: str) -> int | None:
-    patterns = (
-        r"预算\s*(\d+(?:\.\d+)?)",
-        r"(\d+(?:\.\d+)?)\s*元(?:以内|以下|之内)",
-        r"不超过\s*(\d+(?:\.\d+)?)",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return round(float(match.group(1)) * 100)
-    return None
