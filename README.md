@@ -1,29 +1,50 @@
 # Commerce Copilot
 
-一个从需求和代码层面独立实现的多 Agent 电商助手，面向商品发现、购买后服务和普通咨询。
+> 基于 LangGraph、DeepSeek 和 PostgreSQL 构建的可观测多 Agent 电商助手。
 
-这个仓库的目标不是堆叠模型调用，而是把一次回答拆成可观察、可测试的协作过程：Supervisor 将用户输入拆成任务，领域 Agent 独立执行，最后由 Composer 汇总结果。
+Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是把所有逻辑塞进一次模型调用，而是让 Supervisor 拆分任务，领域 Agent 并发执行确定性工具，Grounding 校验事实后再生成最终回答。
 
-## 当前里程碑
+```text
+多意图拆分 · 并发 Agent · Hybrid Retrieval · RRF · Grounding
+多轮记忆 · 用户偏好 · PostgreSQL · Alembic · 可观测 Trace
+```
 
-- [x] 定义独立的产品需求和架构边界
-- [x] Supervisor 支持同一轮多意图拆分
-- [x] Product Scout、Order Care、Conversation Guide 三个 Agent
-- [x] LangGraph 并发分发与结果汇合
-- [x] FastAPI 对话接口及 Agent Trace
-- [x] 第一组自动化测试
-- [x] SQLite 商品、订单与政策表结构
-- [x] FTS5 商品召回、预算和库存硬过滤
-- [x] 离线向量召回与 RRF 混合排序
-- [x] DeepSeek 结构化任务规划与本地降级
-- [x] DeepSeek 证据化回答生成与本地降级
-- [x] 结构化 Claim–Evidence Grounding 与失败关闭
-- [x] 订单状态与售后政策真实查询
-- [x] 离线检索评测（Recall@K、Hit Rate@K、MRR）
-- [x] 前端可观测界面
-- [x] conversation_id 多轮会话记忆与上下文追问
-- [x] 用户注册登录、签名 Token、订单与会话归属校验
-- [x] 用户偏好持久化与个性化商品检索
+## 为什么值得做
+
+普通 LLM 电商助手容易混淆商品与售后任务、编造价格库存，并且无法解释错误发生在哪个环节。本项目重点解决：
+
+- **任务隔离：** Product Scout、Order Care、Conversation Guide 使用统一契约独立工作。
+- **约束正确：** 品类、预算、库存是数据库硬约束，场景和关注点只影响相关性排序。
+- **事实可信：** 商品、订单和政策事实必须通过 Claim–Evidence Grounding。
+- **可降级：** DeepSeek 未配置、超时或输出非法时自动切换本地确定性逻辑。
+- **可观察：** API 返回 Agent、耗时、规划来源、Grounding 和降级原因。
+- **可演进：** Repository、向量器和 Agent Handler 均保留替换边界。
+
+## 已实现能力
+
+| 领域 | 能力 |
+|---|---|
+| 多 Agent | LangGraph Supervisor、`Send` 并发 fan-out、结果汇合与故障隔离 |
+| LLM | DeepSeek 结构化任务规划、证据化回答、本地 Planner/Composer 降级 |
+| 检索 | FTS/BM25、离线向量召回、RRF 融合、硬约束过滤、候补推荐 |
+| 可信回答 | Evidence、Claim、字段级 Grounding、失败关闭 |
+| 多轮能力 | conversation_id、商品序号指代、确定性对比、预算放宽确认 |
+| 个性化 | 用户预算、品类、品牌、场景和关注点持久化，本轮条件优先 |
+| 数据层 | PostgreSQL、SQLAlchemy Repository、Alembic；测试支持临时 SQLite |
+| 安全 | PBKDF2 密码哈希、签名 Token、订单归属和会话隔离 |
+| 工程质量 | 73 个自动化测试、离线检索评测、Web Trace、真实 Git 迭代历史 |
+
+## 项目文档
+
+- [系统架构与设计决策](docs/architecture.md)
+- [五分钟面试演示手册](docs/demo-guide.md)
+- [简历描述与高频面试题](docs/interview-guide.md)
+- [后续功能路线图](docs/roadmap.md)
+- [产品需求与边界](docs/product-spec.md)
+
+## 当前状态与后续规划
+
+当前版本已经形成可运行、可测试的完整闭环。下一阶段将依次补充 SSE 实时执行事件、结构化日志与指标、BGE + pgvector、Redis 缓存与限流、容器化部署和压力测试。规划功能与已实现能力严格分开，详细验收标准见 [roadmap](docs/roadmap.md)。
 
 ## 架构
 
@@ -44,6 +65,24 @@ Supervisor ──拆分任务──┬── Product Scout
 
 领域 Agent 只接收自己的任务，不共享可变中间状态。多个任务由 LangGraph fan-out 并发执行，Composer 只消费标准化的 `AgentReport`。
 
+## 核心目录
+
+```text
+src/commerce_copilot/
+├─ orchestrator.py      # LangGraph 状态图、并发分发与汇合
+├─ planning.py          # DeepSeek Planner 与本地降级
+├─ agents.py            # Product Scout / Order Care / Conversation Guide
+├─ retrieval.py         # 关键词、向量召回与 RRF
+├─ personalization.py   # 偏好合并、显式条件优先级
+├─ grounding.py         # Claim–Evidence 校验
+├─ answering.py         # 证据化回答与本地降级
+├─ database.py          # SQLAlchemy 表结构与 Repository
+├─ api.py               # FastAPI、鉴权依赖与接口
+└─ web/                 # 可观测对话界面
+```
+
+完整数据流和设计理由见 [架构文档](docs/architecture.md)。
+
 ## 本地运行
 
 PowerShell：
@@ -56,6 +95,14 @@ py -3.12 -m venv .venv
 ```
 
 打开 `http://127.0.0.1:8010/` 使用对话与 Agent 可观测界面；`http://127.0.0.1:8010/docs` 提供 API 调试文档。
+
+推荐用下面的问题验证多 Agent 并发：
+
+```text
+推荐一款500元以内的通勤耳机，同时告诉我发货规则
+```
+
+更多演示场景见 [五分钟演示手册](docs/demo-guide.md)。
 
 如需启用 DeepSeek，将 `.env.example` 复制为 `.env`，只在 `.env` 中填写新生成的 `LLM_API_KEY`。没有配置 Key、请求超时或模型输出校验失败时，Supervisor 会自动使用本地规划器，并在响应的 `trace.planning_source` 中标记降级状态。
 
