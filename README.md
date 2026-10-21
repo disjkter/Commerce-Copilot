@@ -139,6 +139,14 @@ py -3.12 -m venv .venv
 
 阶梯报告会给出实测峰值，以及“达到至少 90% 峰值 QPS 且成功率不低于 99%”的最低推荐并发度。Order Care 默认覆盖发货政策、本人订单状态和非本人订单三条场景；也可以使用 `--scenario order_policy`、`--scenario order_status_owned` 或 `--scenario order_status_not_owned` 单独测试。场景成功率不仅检查 Agent 是否报错，还会检查回答中是否出现预期的关键结果。
 
+运行完整编排链路阶梯压测：
+
+```powershell
+.\.venv\Scripts\python.exe -m commerce_copilot.workflow_performance --requests 300 --sweep 1,5,10,20,50 --warmup 10 --output artifacts\workflow-sweep.json
+```
+
+完整链路评测覆盖本地 Planner、LangGraph 分发与汇合、Agent、Grounding、回答组织、会话归属与消息持久化，并在计时结束后清理压测会话。默认使用本地确定性 Planner 和 Composer，防止批量请求产生外部 LLM 费用；只有显式添加 `--allow-llm` 才会使用当前配置的模型。报告同时记录业务成功率、Grounding 失败数、Agent 失败数以及规划和回答来源。单 Agent 报告用于定位执行层瓶颈，完整链路报告用于衡量一次真实对话的服务能力，两者不能混为同一个 QPS。
+
 ## 项目原则
 
 1. 事实必须来自工具或数据源，不由模型凭空补充。

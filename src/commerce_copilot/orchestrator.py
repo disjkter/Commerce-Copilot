@@ -20,7 +20,7 @@ from .contracts import (
 )
 from .database import get_catalog
 from .grounding import validate_reports
-from .planning import DeepSeekPlanner
+from .planning import DeepSeekPlanner, local_plan
 from .personalization import personalize_mission
 
 
@@ -38,6 +38,7 @@ class WorkflowState(TypedDict, total=False):
     answer_source: str
     composer_error: str | None
     grounding: GroundingSummary
+    local_only: bool
 
 
 PLANNER = DeepSeekPlanner()
@@ -45,10 +46,16 @@ ANSWER_COMPOSER = DeepSeekAnswerComposer()
 
 
 async def plan(state: WorkflowState) -> dict[str, object]:
-    decision = await PLANNER.create_plan(
-        state["message"].strip(),
-        state.get("history", []),
-    )
+    if state.get("local_only", False):
+        decision = local_plan(
+            state["message"].strip(),
+            state.get("history", []),
+        )
+    else:
+        decision = await PLANNER.create_plan(
+            state["message"].strip(),
+            state.get("history", []),
+        )
     missions = [
         personalize_mission(
             mission.model_copy(
@@ -96,15 +103,23 @@ async def compose(state: WorkflowState) -> dict[str, object]:
         for report in reports
         if report.status == "completed" and report.role not in blocked_roles
     ]
-    decision = await ANSWER_COMPOSER.create_answer(
-        state.get("message", ""),
-        valid_reports,
-        fallback_answer,
-    )
+    if state.get("local_only", False):
+        answer = fallback_answer
+        answer_source = "local"
+        composer_error = None
+    else:
+        decision = await ANSWER_COMPOSER.create_answer(
+            state.get("message", ""),
+            valid_reports,
+            fallback_answer,
+        )
+        answer = decision.answer
+        answer_source = decision.source
+        composer_error = decision.error
     return {
-        "answer": decision.answer,
-        "answer_source": decision.source,
-        "composer_error": decision.error,
+        "answer": answer,
+        "answer_source": answer_source,
+        "composer_error": composer_error,
         "grounding": grounding,
     }
 
@@ -129,6 +144,7 @@ async def handle_turn(
     conversation_id: str | None = None,
     *,
     user_id: str = "user-demo",
+    local_only: bool = False,
 ) -> TurnResponse:
     started = perf_counter()
     active_conversation_id = conversation_id or uuid4().hex
@@ -155,6 +171,7 @@ async def handle_turn(
             "history": history,
             "preferences": preferences,
             "reports": [],
+            "local_only": local_only,
         }
     )
     reports = result.get("reports", [])

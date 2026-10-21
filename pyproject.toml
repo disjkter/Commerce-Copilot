@@ -27,6 +27,7 @@ dev = [
 [project.scripts]
 commerce-copilot = "commerce_copilot.main:run"
 commerce-copilot-bench = "commerce_copilot.performance:main"
+commerce-copilot-workflow-bench = "commerce_copilot.workflow_performance:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/commerce_copilot"]

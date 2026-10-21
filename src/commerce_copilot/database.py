@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     and_,
     create_engine,
+    delete,
     func,
     inspect,
     insert,
@@ -844,6 +845,42 @@ class CatalogRepository:
             ]
             if evidence_rows:
                 connection.execute(insert(conversation_evidence_table), evidence_rows)
+
+    def delete_conversation(self, conversation_id: str, *, user_id: str) -> bool:
+        """Delete one owned conversation and its turns, used by benchmark cleanup."""
+        self.initialize()
+        with self.engine.begin() as connection:
+            owner = connection.execute(
+                select(users_table.c.user_id)
+                .select_from(
+                    conversation_owners_table.join(
+                        users_table,
+                        users_table.c.id == conversation_owners_table.c.user_id,
+                    )
+                )
+                .where(conversation_owners_table.c.conversation_id == conversation_id)
+            ).scalar_one_or_none()
+            if owner != user_id:
+                return False
+            turn_ids = select(conversation_turns_table.c.id).where(
+                conversation_turns_table.c.conversation_id == conversation_id
+            )
+            connection.execute(
+                delete(conversation_evidence_table).where(
+                    conversation_evidence_table.c.turn_id.in_(turn_ids)
+                )
+            )
+            connection.execute(
+                delete(conversation_turns_table).where(
+                    conversation_turns_table.c.conversation_id == conversation_id
+                )
+            )
+            connection.execute(
+                delete(conversation_owners_table).where(
+                    conversation_owners_table.c.conversation_id == conversation_id
+                )
+            )
+            return True
 
     def get_recent_conversation_turns(
         self,

@@ -97,6 +97,21 @@ def test_order_lookup_enforces_user_ownership(tmp_path):
     assert repository.get_order("ORD-2026-1001", user_id=other.user_id) is None
 
 
+def test_delete_conversation_requires_owner_and_removes_history(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+    repository.seed_products()
+    owner = repository.create_user("cleanup-owner", hash_password("owner-password"))
+    other = repository.create_user("cleanup-other", hash_password("other-password"))
+    conversation_id = "benchmark-cleanup"
+    assert repository.ensure_conversation_owner(conversation_id, owner.user_id)
+    repository.add_conversation_turn(conversation_id, "hello", "world")
+
+    assert repository.delete_conversation(conversation_id, user_id=other.user_id) is False
+    assert repository.get_recent_conversation_turns(conversation_id)
+    assert repository.delete_conversation(conversation_id, user_id=owner.user_id) is True
+    assert repository.get_recent_conversation_turns(conversation_id) == []
+
+
 def test_user_preferences_are_persisted_and_replaced(tmp_path):
     repository = CatalogRepository(tmp_path / "catalog.db")
     user = repository.create_user("preference-owner", hash_password("password-123"))
