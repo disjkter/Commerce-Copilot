@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from time import perf_counter
 
 from .budget import extract_budget_cents
-from .catalog import HybridSearchHit
+from .catalog import HybridSearchHit, Product
 from .comparison import compare_products
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
@@ -37,11 +37,14 @@ async def product_scout(mission: Mission) -> AgentDraft:
 
     product_query = str(mission.parameters.get("product_query", mission.instruction))
     configured_budget = mission.parameters.get("max_price_cents")
-    budget_cents = (
-        int(configured_budget)
-        if isinstance(configured_budget, (int, float))
-        else extract_budget_cents(mission.instruction)
-    )
+    if mission.parameters.get("relax_budget") is True:
+        budget_cents = None
+    else:
+        budget_cents = (
+            int(configured_budget)
+            if isinstance(configured_budget, (int, float))
+            else extract_budget_cents(mission.instruction)
+        )
     selected_references = mission.parameters.get("selected_references")
     configured_categories = mission.parameters.get("categories")
     categories = (
@@ -84,6 +87,9 @@ async def product_scout(mission: Mission) -> AgentDraft:
     if mission.parameters.get("sort_by") == "price_asc":
         hits.sort(key=lambda hit: (hit.product.price_cents, -hit.product.rating))
     if not hits:
+        near_miss = await _find_budget_near_miss(budget_cents, categories)
+        if near_miss is not None and budget_cents is not None:
+            return _budget_near_miss_draft(near_miss, budget_cents)
         constraints = []
         if categories:
             constraints.append(f"品类为 {'/'.join(categories)}")
@@ -164,6 +170,71 @@ async def product_scout(mission: Mission) -> AgentDraft:
         evidence.append(comparison.evidence)
         claims.extend(comparison.claims)
     return "\n".join(lines), evidence, claims
+
+
+async def _find_budget_near_miss(
+    budget_cents: int | None,
+    categories: list[str] | None,
+) -> Product | None:
+    if budget_cents is None or not categories:
+        return None
+    products = await asyncio.to_thread(
+        get_catalog().list_products,
+        categories=categories,
+        in_stock_only=True,
+    )
+    over_budget = [
+        product for product in products if product.price_cents > budget_cents
+    ]
+    if len(over_budget) != len(products) or not over_budget:
+        return None
+    return min(
+        over_budget,
+        key=lambda product: (
+            product.price_cents - budget_cents,
+            -product.rating,
+            product.product_id,
+        ),
+    )
+
+
+def _budget_near_miss_draft(product: Product, budget_cents: int) -> AgentDraft:
+    gap_cents = product.price_cents - budget_cents
+    evidence = Evidence(
+        source="local_catalog",
+        reference=product.product_id,
+        attributes={
+            "title": product.title,
+            "price_cents": product.price_cents,
+            "rating": product.rating,
+            "stock": product.stock,
+            "requested_budget_cents": budget_cents,
+            "budget_gap_cents": gap_cents,
+            "match_status": "near_miss",
+            "retrieval_sources": ["constraint_relaxation"],
+        },
+    )
+    claim_values = {
+        "title": product.title,
+        "price_cents": product.price_cents,
+        "budget_gap_cents": gap_cents,
+    }
+    claims = [
+        Claim(
+            statement=f"{product.product_id} 的 {attribute} 为 {value}",
+            evidence_reference=product.product_id,
+            attribute=attribute,
+            expected_value=value,
+        )
+        for attribute, value in claim_values.items()
+    ]
+    message = (
+        f"{budget_cents / 100:.0f} 元预算内暂无符合品类要求的在售商品。"
+        f"最接近预算的候补是 {product.title}，价格 {product.price_cents / 100:.2f} 元，"
+        f"超出预算 {gap_cents / 100:.2f} 元。该商品没有被当作符合预算的结果；"
+        "如果你能接受提高预算，我可以继续介绍这款商品。"
+    )
+    return message, [evidence], claims
 
 
 async def order_care(mission: Mission) -> AgentDraft:

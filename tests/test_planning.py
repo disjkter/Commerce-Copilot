@@ -82,6 +82,29 @@ def test_local_plan_resolves_second_product_from_ordered_evidence():
     assert plan.missions[0].parameters["selected_references"] == ["CP-AUD-101"]
 
 
+def test_local_plan_accepts_previous_budget_near_miss_without_old_budget():
+    history = [
+        ConversationTurn(
+            user_message="我要耳机，预算不超过300元",
+            assistant_answer="候补商品价格329元，超出预算29元。",
+            evidence=[
+                Evidence(
+                    source="local_catalog",
+                    reference="CP-AUD-101",
+                    attributes={"match_status": "near_miss"},
+                )
+            ],
+        )
+    ]
+
+    plan = local_plan("可以，提高预算", history)
+
+    assert plan.missions[0].role == AgentRole.PRODUCT_SCOUT
+    assert plan.missions[0].parameters["selected_references"] == ["CP-AUD-101"]
+    assert "max_price_cents" not in plan.missions[0].parameters
+    assert plan.missions[0].parameters["relax_budget"] is True
+
+
 def test_deepseek_json_plan_is_validated():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"
@@ -107,6 +130,45 @@ def test_deepseek_json_plan_is_validated():
     assert plan.source == "deepseek"
     assert plan.missions[0].parameters["max_price_cents"] == 50000
     assert "selected_references" not in plan.missions[0].parameters
+
+
+def test_deepseek_plan_can_accept_grounded_near_miss():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"tasks":[{"role":"product_scout",'
+                            '"instruction":"接受候补商品","product_query":"耳机",'
+                            '"selected_product_references":["CP-AUD-101"],'
+                            '"relax_budget":true}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    history = [
+        ConversationTurn(
+            user_message="我要300元以内的耳机",
+            assistant_answer="候补商品超出预算29元。",
+            evidence=[
+                Evidence(
+                    source="local_catalog",
+                    reference="CP-AUD-101",
+                    attributes={"match_status": "near_miss"},
+                )
+            ],
+        )
+    ]
+    planner = DeepSeekPlanner(make_settings("test-key"), httpx.MockTransport(handler))
+
+    plan = asyncio.run(planner.create_plan("可以，提高预算", history))
+
+    assert plan.missions[0].parameters["selected_references"] == ["CP-AUD-101"]
+    assert plan.missions[0].parameters["relax_budget"] is True
 
 
 def test_invalid_model_output_falls_back_locally():

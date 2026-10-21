@@ -60,9 +60,28 @@ def test_explicit_category_never_returns_a_different_product_type():
         report for report in result.reports if report.role == AgentRole.PRODUCT_SCOUT
     )
 
-    assert product_report.evidence == []
-    assert "品类为 耳机" in result.answer
-    assert "300 元" in result.answer
+    assert len(product_report.evidence) == 1
+    near_miss = product_report.evidence[0]
+    assert near_miss.reference == "CP-AUD-101"
+    assert near_miss.attributes["match_status"] == "near_miss"
+    assert near_miss.attributes["budget_gap_cents"] == 2900
+    assert "超出预算 29.00 元" in result.answer
+    assert "鼠标" not in result.answer
+    assert result.trace.grounding.passed is True
+
+
+def test_user_can_accept_budget_near_miss_in_follow_up():
+    conversation_id = f"near-miss-{uuid4().hex}"
+    first = asyncio.run(
+        handle_turn("我要耳机，预算不超过300元，办公用", conversation_id)
+    )
+    assert first.reports[0].evidence[0].attributes["match_status"] == "near_miss"
+
+    accepted = asyncio.run(handle_turn("可以，提高预算", conversation_id))
+
+    assert accepted.reports[0].evidence[0].reference == "CP-AUD-101"
+    assert "329.00 元" in accepted.answer
+    assert accepted.trace.grounding.passed is True
 
 
 def test_follow_up_uses_persisted_conversation_context():

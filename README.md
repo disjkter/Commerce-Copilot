@@ -126,6 +126,8 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 
 Supervisor 只用历史偏好补充本轮缺失的条件：用户本轮明确说出的预算或品类具有更高优先级；“第一款”等直接商品指代不会被历史偏好再次过滤。实际采用的偏好会出现在响应的 `trace.applied_preferences` 和网页右侧“本轮个性化”区域中。没有有效偏好的用户只输入“推荐商品”时，Product Scout 会追问品类、预算或场景，而不是执行无意义检索。
 
+严格检索无结果且确认预算是唯一阻塞条件时，Product Scout 会保持品类与库存约束，只查询价格差距最小的候补商品。候补结果明确标记 `match_status=near_miss`，超预算金额由代码计算并接受 Grounding 校验，不会伪装成符合预算的商品；用户下一轮明确接受提高预算后，Planner 才会按保存的商品编号继续介绍。
+
 ## PostgreSQL 数据存储
 
 运行环境通过 `DATABASE_URL` 连接 PostgreSQL，SQLAlchemy 负责连接池、事务和跨数据库的数据访问。用户、商品、订单、政策、会话、Evidence 及资源归属都持久化在 PostgreSQL。测试仍可向 `CatalogRepository` 传入临时 SQLite 路径，因此测试不依赖本机 PostgreSQL，也不会污染开发数据。

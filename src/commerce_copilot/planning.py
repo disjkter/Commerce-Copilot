@@ -13,7 +13,16 @@ from .contracts import AgentRole, ConversationTurn, Evidence, Mission
 PRODUCT_TERMS = ("推荐", "商品", "价格", "预算", "耳机", "电脑", "手机", "键盘", "鼠标", "买")
 CARE_TERMS = ("订单", "物流", "发货", "退款", "退货", "换货", "售后")
 REFERENCE_TERMS = ("它", "这个", "那个", "这款", "那款", "第一款", "第二款", "第三款", "刚才", "上一个", "继续")
-PRODUCT_FOLLOW_UP_TERMS = ("便宜", "贵", "换一", "其他", "哪款", "怎么样")
+RELAXATION_ACCEPTANCE_TERMS = ("可以", "接受", "提高预算", "放宽预算")
+PRODUCT_FOLLOW_UP_TERMS = (
+    "便宜",
+    "贵",
+    "换一",
+    "其他",
+    "哪款",
+    "怎么样",
+    *RELAXATION_ACCEPTANCE_TERMS,
+)
 
 
 class Plan(BaseModel):
@@ -29,6 +38,7 @@ class ModelTask(BaseModel):
     max_price_yuan: float | None = Field(default=None, ge=0, le=1_000_000)
     preferences: list[str] = Field(default_factory=list, max_length=10)
     selected_product_references: list[str] = Field(default_factory=list, max_length=3)
+    relax_budget: bool = False
 
 
 class ModelPlan(BaseModel):
@@ -44,6 +54,8 @@ conversation_guide 只处理问候或能力咨询。同一个 role 最多出现�
 例如“它”“那款”“再便宜一点”；不得从无关历史中继承条件或虚构上下文。
 如果用户用“第一款、第二款”等指代历史商品，只能从历史 evidence 中复制对应的 reference 到
 selected_product_references，不得编造商品编号。
+如果历史 evidence 的 match_status 为 near_miss，且用户明确接受提高或放宽预算，应复制该 reference，
+设置 relax_budget=true，并且不要继续输出旧的 max_price_yuan。
 必须只输出 JSON，格式示例：
 {"tasks":[{"role":"product_scout","instruction":"寻找通勤耳机","product_query":"通勤 无线 耳机","max_price_yuan":500,"preferences":["通勤","无线"]}]}
 """
@@ -143,6 +155,11 @@ def local_plan(
     invalid_positions = [
         position for position in positions if position > len(previous_products)
     ]
+    accepts_relaxation = bool(previous_products) and any(
+        term in normalized for term in RELAXATION_ACCEPTANCE_TERMS
+    )
+    if accepts_relaxation and not selected_references:
+        selected_references = [previous_products[0].reference]
     has_reference = bool(previous) and any(
         term in normalized for term in REFERENCE_TERMS + PRODUCT_FOLLOW_UP_TERMS
     )
@@ -164,11 +181,13 @@ def local_plan(
     missions: list[Mission] = []
     if product_intent:
         budget = extract_budget_cents(normalized)
-        if budget is None and has_reference:
+        if budget is None and has_reference and not accepts_relaxation:
             budget = extract_budget_cents(previous)
         parameters = {"product_query": contextual_text}
         if selected_references:
             parameters["selected_references"] = selected_references
+        if accepts_relaxation:
+            parameters["relax_budget"] = True
         if invalid_positions:
             missing = "、".join(str(position) for position in invalid_positions)
             parameters["selection_error"] = f"上一轮结果中没有第 {missing} 款商品。"
@@ -208,6 +227,8 @@ def _task_to_mission(
         ]
         if selected_references:
             parameters["selected_references"] = selected_references
+        if task.relax_budget:
+            parameters["relax_budget"] = True
     return Mission(role=task.role, instruction=task.instruction, parameters=parameters)
 
 
