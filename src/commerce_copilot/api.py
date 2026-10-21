@@ -60,7 +60,10 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(WEB_ROOT / "index.html")
+        return FileResponse(
+            WEB_ROOT / "index.html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

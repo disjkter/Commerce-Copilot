@@ -22,6 +22,7 @@ def test_frontend_is_served_with_assets():
     script = client.get("/assets/app.js")
 
     assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store, max-age=0"
     assert "Commerce Copilot" in page.text
     assert stylesheet.status_code == 200
     assert script.status_code == 200
@@ -29,6 +30,7 @@ def test_frontend_is_served_with_assets():
     assert 'id="preferences-dialog"' in page.text
     assert 'id="preferences-button"' in page.text
     assert "savePreferences" in script.text
+    assert "/assets/app.js?v=20261021-3" in page.text
 
 
 def test_health_endpoint():
