@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import operator
 from collections.abc import Awaitable, Callable
 from time import perf_counter
@@ -22,11 +23,13 @@ from .contracts import (
 )
 from .database import get_catalog
 from .grounding import validate_reports
+from .observability import bind_trace_id, log_event, reset_trace_id
 from .planning import DeepSeekPlanner, local_plan
 from .personalization import personalize_mission
 
 
 EventSink = Callable[[dict[str, object]], Awaitable[None]]
+LOGGER = logging.getLogger("commerce_copilot.workflow")
 
 
 class WorkflowState(TypedDict, total=False):
@@ -54,9 +57,11 @@ async def _emit(
     event: str,
     **data: object,
 ) -> None:
+    trace_id = state.get("trace_id", "")
+    log_event(LOGGER, event, trace_id=trace_id or None, **data)
     sink = state.get("event_sink")
     if sink is not None:
-        await sink({"event": event, "trace_id": state["trace_id"], **data})
+        await sink({"event": event, "trace_id": trace_id, **data})
 
 
 PLANNER = DeepSeekPlanner()
@@ -228,24 +233,94 @@ async def handle_turn(
     local_only: bool = False,
     event_sink: EventSink | None = None,
 ) -> TurnResponse:
-    started = perf_counter()
     trace_id = uuid4().hex
+    token = bind_trace_id(trace_id)
+    started = perf_counter()
+    log_event(
+        LOGGER,
+        "workflow_started",
+        trace_id=trace_id,
+        message_length=len(message),
+        has_conversation_id=conversation_id is not None,
+        local_only=local_only,
+    )
+    try:
+        return await _handle_turn(
+            message,
+            conversation_id,
+            user_id=user_id,
+            local_only=local_only,
+            event_sink=event_sink,
+            trace_id=trace_id,
+            started=started,
+        )
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            "workflow_failed",
+            level=logging.ERROR,
+            trace_id=trace_id,
+            elapsed_ms=round((perf_counter() - started) * 1000, 2),
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        raise
+    finally:
+        reset_trace_id(token)
+
+
+async def _handle_turn(
+    message: str,
+    conversation_id: str | None,
+    *,
+    user_id: str,
+    local_only: bool,
+    event_sink: EventSink | None,
+    trace_id: str,
+    started: float,
+) -> TurnResponse:
     active_conversation_id = conversation_id or uuid4().hex
     repository = get_catalog()
+    repository_started = perf_counter()
     owns_conversation = await asyncio.to_thread(
         repository.ensure_conversation_owner,
         active_conversation_id,
         user_id,
     )
+    ownership_elapsed_ms = round((perf_counter() - repository_started) * 1000, 2)
+    log_event(
+        LOGGER,
+        "repository_completed",
+        operation="ensure_conversation_owner",
+        elapsed_ms=ownership_elapsed_ms,
+        success=owns_conversation,
+    )
     if not owns_conversation:
         raise PermissionError("conversation belongs to another user")
+    history_started = perf_counter()
     history = await asyncio.to_thread(
         repository.get_recent_conversation_turns,
         active_conversation_id,
     )
+    history_elapsed_ms = round((perf_counter() - history_started) * 1000, 2)
+    log_event(
+        LOGGER,
+        "repository_completed",
+        operation="get_recent_conversation_turns",
+        elapsed_ms=history_elapsed_ms,
+        result_count=len(history),
+    )
+    preferences_started = perf_counter()
     preferences = await asyncio.to_thread(
         repository.get_user_preferences,
         user_id,
+    )
+    preferences_elapsed_ms = round((perf_counter() - preferences_started) * 1000, 2)
+    log_event(
+        LOGGER,
+        "repository_completed",
+        operation="get_user_preferences",
+        elapsed_ms=preferences_elapsed_ms,
     )
     result = await GRAPH.ainvoke(
         {
@@ -277,15 +352,37 @@ async def handle_turn(
                 result.get("missions", [])
             ),
             grounding=result["grounding"],
-            stage_timings=result.get("stage_timings", []),
+            stage_timings=[
+                StageTiming(
+                    stage="repository_setup",
+                    elapsed_ms=(
+                        ownership_elapsed_ms
+                        + history_elapsed_ms
+                        + preferences_elapsed_ms
+                    ),
+                ),
+                *result.get("stage_timings", []),
+            ],
         ),
     )
+    persistence_started = perf_counter()
     await asyncio.to_thread(
         repository.add_conversation_turn,
         active_conversation_id,
         message,
         response.answer,
         [item for report in reports for item in report.evidence],
+    )
+    persistence_elapsed_ms = round((perf_counter() - persistence_started) * 1000, 2)
+    response.trace.stage_timings.append(
+        StageTiming(stage="persistence", elapsed_ms=persistence_elapsed_ms)
+    )
+    log_event(
+        LOGGER,
+        "repository_completed",
+        operation="add_conversation_turn",
+        elapsed_ms=persistence_elapsed_ms,
+        evidence_count=sum(len(report.evidence) for report in reports),
     )
     response.elapsed_ms = round((perf_counter() - started) * 1000, 2)
     await _emit(

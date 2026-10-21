@@ -22,8 +22,8 @@
 目标：让多 Agent 的执行过程在网页中实时可见，并能够定位慢请求和失败节点。
 
 - [x] 使用 SSE 输出 `planning_started`、`agent_completed`、`grounding_completed`、`answer_completed`
-- [x] 为每次请求生成 `trace_id`，贯穿编排过程和最终响应
-- [ ] 输出结构化 JSON 日志，记录耗时、Agent 状态、降级原因和检索规模
+- [x] 为每次请求生成 `trace_id`，贯穿 API、编排、Agent、Repository 和最终响应
+- [x] 输出结构化 JSON 日志，记录阶段耗时、Agent 状态、数据访问和降级原因
 - [ ] 增加基础指标：P50/P95 延迟、LLM 降级率、Grounding 失败率、无结果率
 
 验收标准：网页可以逐步展示执行进度；一次异常能够通过 `trace_id` 还原完整链路。

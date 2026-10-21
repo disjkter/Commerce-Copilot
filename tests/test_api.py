@@ -64,10 +64,12 @@ def test_turn_endpoint_exposes_agent_trace():
     assert body["trace"]["grounding"]["passed"] is True
     assert len(body["trace"]["trace_id"]) == 32
     assert {item["stage"] for item in body["trace"]["stage_timings"]} >= {
+        "repository_setup",
         "planning",
         "agent",
         "grounding",
         "answering",
+        "persistence",
     }
 
 

@@ -151,6 +151,8 @@ py -3.12 -m venv .venv
 
 `POST /v1/turns/stream` 使用 SSE 逐步输出 `planning_started`、`planning_completed`、`agent_started`、`agent_completed`、`grounding_completed`、`answer_completed` 和最终 `complete` 事件。每轮请求生成独立 `trace_id`，最终响应还包含 Planner、各 Agent、Grounding 和 Composer 的分阶段耗时。网页使用带 Bearer Token 的 `fetch` 流读取这些事件，在回答完成前实时更新右侧执行链路；原有 `POST /v1/turns` 非流式接口继续保留。
 
+应用日志使用单行 JSON 输出，包含 `timestamp`、`level`、`logger`、`event`、`trace_id` 和事件相关字段。一次请求中的工作流、Agent、Grounding、回答生成及 Repository 操作共享同一个 `trace_id`；日志只记录消息长度，不记录密码、Token 或完整用户输入。可通过 `.env` 中的 `LOG_LEVEL` 调整日志等级。
+
 ## 项目原则
 
 1. 事实必须来自工具或数据源，不由模型凭空补充。

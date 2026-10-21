@@ -21,6 +21,7 @@ class Settings:
     auth_secret: str = "local-development-secret-change-before-deploying"
     access_token_minutes: int = 120
     database_url: str = ""
+    log_level: str = "INFO"
 
 
 @lru_cache
@@ -39,5 +40,6 @@ def get_settings() -> Settings:
         ),
         access_token_minutes=int(os.getenv("ACCESS_TOKEN_MINUTES", "120")),
         database_url=os.getenv("DATABASE_URL", ""),
+        log_level=os.getenv("LOG_LEVEL", "INFO"),
     )
 
