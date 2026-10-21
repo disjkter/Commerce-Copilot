@@ -25,6 +25,7 @@ def test_saved_preferences_fill_missing_product_constraints():
 
     assert result.parameters["max_price_cents"] == 50000
     assert result.parameters["product_query"] == "推荐商品 耳机 通勤"
+    assert result.parameters["categories"] == ["耳机"]
     assert result.parameters["applied_preferences"] == {
         "max_budget_cents": 50000,
         "preferred_categories": ["耳机"],
@@ -43,6 +44,7 @@ def test_current_request_overrides_saved_budget_and_category():
 
     assert result.parameters["max_price_cents"] == 30000
     assert result.parameters["product_query"] == "推荐键盘"
+    assert result.parameters["categories"] == ["键盘"]
     assert result.parameters["applied_preferences"] == {}
 
 

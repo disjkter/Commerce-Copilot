@@ -32,6 +32,19 @@ def test_budget_is_a_hard_filter(tmp_path):
     assert [hit.product.product_id for hit in hits] == ["CP-AUD-101"]
 
 
+def test_category_is_a_hard_filter(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+    repository.seed_products()
+
+    hits = repository.search_products(
+        "办公",
+        max_price_cents=30000,
+        categories=["耳机"],
+    )
+
+    assert hits == []
+
+
 def test_unknown_term_returns_no_result(tmp_path):
     repository = CatalogRepository(tmp_path / "catalog.db")
     repository.seed_products()

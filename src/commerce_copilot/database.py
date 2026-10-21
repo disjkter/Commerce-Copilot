@@ -446,6 +446,7 @@ class CatalogRepository:
         query: str,
         *,
         max_price_cents: int | None = None,
+        categories: list[str] | None = None,
         in_stock_only: bool = True,
         limit: int = 5,
     ) -> list[ProductSearchHit]:
@@ -454,12 +455,14 @@ class CatalogRepository:
             return self._search_products_sqlite(
                 query,
                 max_price_cents=max_price_cents,
+                categories=categories,
                 in_stock_only=in_stock_only,
                 limit=limit,
             )
         return self._search_products_postgres(
             query,
             max_price_cents=max_price_cents,
+            categories=categories,
             in_stock_only=in_stock_only,
             limit=limit,
         )
@@ -469,6 +472,7 @@ class CatalogRepository:
         query: str,
         *,
         max_price_cents: int | None,
+        categories: list[str] | None,
         in_stock_only: bool,
         limit: int,
     ) -> list[ProductSearchHit]:
@@ -480,6 +484,13 @@ class CatalogRepository:
         if max_price_cents is not None:
             conditions.append("p.price_cents <= :max_price_cents")
             parameters["max_price_cents"] = max_price_cents
+        if categories:
+            placeholders = []
+            for index, category in enumerate(categories):
+                key = f"category_{index}"
+                placeholders.append(f":{key}")
+                parameters[key] = category
+            conditions.append(f"p.category IN ({', '.join(placeholders)})")
         if in_stock_only:
             conditions.append("p.stock > 0")
         statement = text(
@@ -503,6 +514,7 @@ class CatalogRepository:
         query: str,
         *,
         max_price_cents: int | None,
+        categories: list[str] | None,
         in_stock_only: bool,
         limit: int,
     ) -> list[ProductSearchHit]:
@@ -522,6 +534,13 @@ class CatalogRepository:
         if max_price_cents is not None:
             conditions.append("p.price_cents <= :max_price_cents")
             parameters["max_price_cents"] = max_price_cents
+        if categories:
+            placeholders = []
+            for index, category in enumerate(categories):
+                key = f"category_{index}"
+                placeholders.append(f":{key}")
+                parameters[key] = category
+            conditions.append(f"p.category IN ({', '.join(placeholders)})")
         if in_stock_only:
             conditions.append("p.stock > 0")
         score = " + ".join(score_parts)
@@ -549,12 +568,15 @@ class CatalogRepository:
         self,
         *,
         max_price_cents: int | None = None,
+        categories: list[str] | None = None,
         in_stock_only: bool = True,
     ) -> list[Product]:
         self.initialize()
         statement = select(products_table)
         if max_price_cents is not None:
             statement = statement.where(products_table.c.price_cents <= max_price_cents)
+        if categories:
+            statement = statement.where(products_table.c.category.in_(categories))
         if in_stock_only:
             statement = statement.where(products_table.c.stock > 0)
         statement = statement.order_by(products_table.c.product_id)

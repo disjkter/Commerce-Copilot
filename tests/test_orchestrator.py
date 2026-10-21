@@ -54,6 +54,17 @@ def test_budget_without_yuan_unit_filters_product_results():
     assert all(item.reference != "CP-AUD-103" for item in product_report.evidence)
 
 
+def test_explicit_category_never_returns_a_different_product_type():
+    result = asyncio.run(handle_turn("我要耳机，预算不超过300元，办公用"))
+    product_report = next(
+        report for report in result.reports if report.role == AgentRole.PRODUCT_SCOUT
+    )
+
+    assert product_report.evidence == []
+    assert "品类为 耳机" in result.answer
+    assert "300 元" in result.answer
+
+
 def test_follow_up_uses_persisted_conversation_context():
     conversation_id = f"test-{uuid4().hex}"
     asyncio.run(handle_turn("查询订单 ORD-2026-1001", conversation_id))

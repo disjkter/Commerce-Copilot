@@ -45,3 +45,15 @@ def test_hard_budget_filter_applies_to_both_channels(tmp_path):
     hits = retriever.search("通勤无线耳机", max_price_cents=40000)
 
     assert [hit.product.product_id for hit in hits] == ["CP-AUD-101"]
+
+
+def test_hard_category_filter_applies_to_both_channels(tmp_path):
+    retriever = make_retriever(tmp_path)
+
+    hits = retriever.search(
+        "我要耳机 办公",
+        max_price_cents=30000,
+        categories=["耳机"],
+    )
+
+    assert hits == []

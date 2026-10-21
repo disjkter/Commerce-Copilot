@@ -43,6 +43,12 @@ async def product_scout(mission: Mission) -> AgentDraft:
         else extract_budget_cents(mission.instruction)
     )
     selected_references = mission.parameters.get("selected_references")
+    configured_categories = mission.parameters.get("categories")
+    categories = (
+        [str(item) for item in configured_categories]
+        if isinstance(configured_categories, list)
+        else None
+    )
     if not selected_references and needs_product_clarification(product_query):
         return (
             "你想购买哪一类商品？还可以告诉我预算、使用场景，或者最关注的功能，我再为你筛选。",
@@ -72,14 +78,24 @@ async def product_scout(mission: Mission) -> AgentDraft:
             get_retriever().search,
             product_query,
             max_price_cents=budget_cents,
+            categories=categories,
             limit=3,
         )
     if mission.parameters.get("sort_by") == "price_asc":
         hits.sort(key=lambda hit: (hit.product.price_cents, -hit.product.rating))
     if not hits:
-        budget_note = f"且价格不超过 {budget_cents / 100:.0f} 元" if budget_cents else ""
+        constraints = []
+        if categories:
+            constraints.append(f"品类为 {'/'.join(categories)}")
+        if budget_cents:
+            constraints.append(f"价格不超过 {budget_cents / 100:.0f} 元")
+        constraint_note = "、".join(constraints)
+        if constraint_note:
+            constraint_note = f"{constraint_note}且符合其他关键词"
+        else:
+            constraint_note = "符合关键词"
         return (
-            f"商品发现任务已完成，但目录中没有找到符合关键词{budget_note}的在售商品。",
+            f"商品发现任务已完成，但目录中没有找到{constraint_note}的在售商品。",
             [],
             [],
         )

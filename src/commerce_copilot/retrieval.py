@@ -49,6 +49,7 @@ class HybridRetriever:
         query: str,
         *,
         max_price_cents: int | None = None,
+        categories: list[str] | None = None,
         in_stock_only: bool = True,
         limit: int = 5,
         recall_limit: int = 20,
@@ -56,11 +57,13 @@ class HybridRetriever:
         lexical_hits = self.repository.search_products(
             query,
             max_price_cents=max_price_cents,
+            categories=categories,
             in_stock_only=in_stock_only,
             limit=recall_limit,
         )
         candidates = self.repository.list_products(
             max_price_cents=max_price_cents,
+            categories=categories,
             in_stock_only=in_stock_only,
         )
 

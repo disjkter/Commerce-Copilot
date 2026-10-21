@@ -25,6 +25,10 @@ def needs_product_clarification(query: str) -> bool:
     return normalized in GENERIC_PRODUCT_REQUESTS
 
 
+def extract_product_categories(query: str) -> list[str]:
+    return [term for term in PRODUCT_CATEGORY_TERMS if term in query]
+
+
 def personalize_mission(mission: Mission, preferences: UserPreferences) -> Mission:
     """Use saved preferences only where the current request has no explicit value."""
     if mission.role != AgentRole.PRODUCT_SCOUT:
@@ -36,15 +40,19 @@ def personalize_mission(mission: Mission, preferences: UserPreferences) -> Missi
 
     applied: dict[str, object] = {}
     query = str(parameters.get("product_query", mission.instruction)).strip()
+    explicit_categories = extract_product_categories(query)
+    if explicit_categories:
+        parameters["categories"] = explicit_categories
 
     if parameters.get("max_price_cents") is None and preferences.max_budget_cents:
         parameters["max_price_cents"] = preferences.max_budget_cents
         applied["max_budget_cents"] = preferences.max_budget_cents
 
     additions: list[str] = []
-    if not any(term in query for term in PRODUCT_CATEGORY_TERMS):
+    if not explicit_categories:
         additions.extend(preferences.preferred_categories)
         if preferences.preferred_categories:
+            parameters["categories"] = preferences.preferred_categories
             applied["preferred_categories"] = preferences.preferred_categories
 
     for field_name, terms in (
