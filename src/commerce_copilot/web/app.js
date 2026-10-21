@@ -7,6 +7,7 @@ const loadingTemplate = document.querySelector("#loading-template");
 const traceEmpty = document.querySelector("#trace-empty");
 const traceContent = document.querySelector("#trace-content");
 const runState = document.querySelector("#run-state");
+const traceIdLabel = document.querySelector("#trace-id");
 const sessionLabel = document.querySelector("#session-label");
 const authScreen = document.querySelector("#auth-screen");
 const authForm = document.querySelector("#auth-form");
@@ -28,6 +29,8 @@ let conversationId = sessionStorage.getItem("commerce_conversation_id");
 let accessToken = sessionStorage.getItem("commerce_access_token");
 let currentUsername = sessionStorage.getItem("commerce_username");
 let authMode = "login";
+let liveAgentCount = 0;
+let plannedAgentCount = 0;
 
 updateSessionLabel();
 updateAuthState();
@@ -123,24 +126,10 @@ form.addEventListener("submit", async (event) => {
   const loading = loadingTemplate.content.firstElementChild.cloneNode(true);
   messages.append(loading);
   scrollMessages();
+  beginLiveTrace();
 
   try {
-    const response = await fetch("/v1/turns", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ message: text, conversation_id: conversationId }),
-    });
-    const body = await response.json();
-    if (response.status === 401) {
-      logout();
-      throw new Error("登录已过期，请重新登录");
-    }
-    if (!response.ok) {
-      throw new Error(body.detail ? JSON.stringify(body.detail) : `HTTP ${response.status}`);
-    }
+    const body = await consumeTurnStream(text);
     conversationId = body.conversation_id;
     sessionStorage.setItem("commerce_conversation_id", conversationId);
     updateSessionLabel();
@@ -155,6 +144,110 @@ form.addEventListener("submit", async (event) => {
     setRunning(false, "failed");
   }
 });
+
+async function consumeTurnStream(message) {
+  const response = await fetch("/v1/turns/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ message, conversation_id: conversationId }),
+  });
+  if (response.status === 401) {
+    logout();
+    throw new Error("登录已过期，请重新登录");
+  }
+  if (!response.ok || !response.body) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail ? JSON.stringify(body.detail) : `HTTP ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completedResponse = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let match = buffer.match(/\r?\n\r?\n/);
+    while (match && match.index !== undefined) {
+      const block = buffer.slice(0, match.index);
+      buffer = buffer.slice(match.index + match[0].length);
+      const parsed = parseSseBlock(block);
+      if (parsed) {
+        handleStreamEvent(parsed.event, parsed.data);
+        if (parsed.event === "error") {
+          throw new Error(parsed.data.error || "流式请求失败");
+        }
+        if (parsed.event === "complete") completedResponse = parsed.data.response;
+      }
+      match = buffer.match(/\r?\n\r?\n/);
+    }
+    if (done) break;
+  }
+  if (!completedResponse) throw new Error("流式响应提前结束");
+  return completedResponse;
+}
+
+function parseSseBlock(block) {
+  if (!block.trim()) return null;
+  let event = "message";
+  const dataLines = [];
+  block.split(/\r?\n/).forEach((line) => {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  });
+  if (!dataLines.length) return null;
+  return { event, data: JSON.parse(dataLines.join("\n")) };
+}
+
+function beginLiveTrace() {
+  liveAgentCount = 0;
+  plannedAgentCount = 0;
+  traceEmpty.classList.add("hidden");
+  traceContent.classList.remove("hidden");
+  traceIdLabel.textContent = "TRACE · WAITING";
+  ["metric-time", "metric-agents", "metric-claims"].forEach((id) => setText(id, "—"));
+  ["planning-source", "agent-status", "grounding-status", "answer-source"].forEach((id) => setPill(id, "WAITING"));
+  document.querySelector("#agent-reports").replaceChildren();
+  setText("agent-count-label", "0 REPORTS");
+  renderPersonalization({});
+}
+
+function handleStreamEvent(event, data) {
+  if (data.trace_id) traceIdLabel.textContent = `TRACE · ${data.trace_id.slice(0, 10).toUpperCase()}`;
+  if (event === "planning_started") setPill("planning-source", "RUNNING");
+  if (event === "planning_completed") {
+    plannedAgentCount = data.agents.length;
+    setText("metric-agents", plannedAgentCount);
+    setPill("planning-source", `${data.source} · ${formatNumber(data.elapsed_ms)} ms`, true);
+    setPill("agent-status", `0/${plannedAgentCount} RUNNING`);
+  }
+  if (event === "agent_started") setPill("agent-status", `${liveAgentCount}/${plannedAgentCount} RUNNING`);
+  if (event === "agent_completed") {
+    liveAgentCount += 1;
+    setPill(
+      "agent-status",
+      `${liveAgentCount}/${plannedAgentCount} ${data.status === "completed" ? "OK" : "FAILED"}`,
+      data.status === "completed",
+    );
+  }
+  if (event === "grounding_completed") {
+    setText("metric-claims", data.checked_claims);
+    setPill(
+      "grounding-status",
+      `${data.passed ? "PASSED" : "BLOCKED"} · ${formatNumber(data.elapsed_ms)} ms`,
+      data.passed,
+    );
+  }
+  if (event === "answer_completed") {
+    setPill("answer-source", `${data.source} · ${formatNumber(data.elapsed_ms)} ms`, true);
+  }
+  if (event === "workflow_completed") {
+    setText("metric-time", `${formatNumber(data.elapsed_ms)} ms`);
+  }
+}
 
 function appendMessage(role, text) {
   const article = document.createElement("article");
@@ -185,16 +278,28 @@ function renderTrace(body) {
   setText("metric-time", `${formatNumber(body.elapsed_ms)} ms`);
   setText("metric-agents", body.reports.length);
   setText("metric-claims", body.trace.grounding.checked_claims);
-  setPill("planning-source", body.trace.planning_source);
+  traceIdLabel.textContent = `TRACE · ${body.trace.trace_id.slice(0, 10).toUpperCase()}`;
+  const planningTiming = findStageTiming(body.trace, "planning");
+  const groundingTiming = findStageTiming(body.trace, "grounding");
+  const answeringTiming = findStageTiming(body.trace, "answering");
+  setPill("planning-source", formatStage(body.trace.planning_source, planningTiming));
   setPill("agent-status", `${body.reports.filter((item) => item.status === "completed").length}/${body.reports.length} OK`);
-  setPill("grounding-status", body.trace.grounding.passed ? "PASSED" : "BLOCKED", body.trace.grounding.passed);
-  setPill("answer-source", body.trace.answer_source);
+  setPill("grounding-status", formatStage(body.trace.grounding.passed ? "PASSED" : "BLOCKED", groundingTiming), body.trace.grounding.passed);
+  setPill("answer-source", formatStage(body.trace.answer_source, answeringTiming));
   setText("agent-count-label", `${body.reports.length} REPORT${body.reports.length === 1 ? "" : "S"}`);
 
   const reportContainer = document.querySelector("#agent-reports");
   reportContainer.replaceChildren(...body.reports.map(createAgentCard));
   renderPersonalization(body.trace.applied_preferences || {});
   renderErrors(body);
+}
+
+function findStageTiming(trace, stage) {
+  return (trace.stage_timings || []).find((item) => item.stage === stage);
+}
+
+function formatStage(label, timing) {
+  return timing ? `${label} · ${formatNumber(timing.elapsed_ms)} ms` : label;
 }
 
 function renderPersonalization(preferences) {
@@ -301,6 +406,7 @@ function resetTrace() {
   traceContent.classList.add("hidden");
   runState.className = "state-badge idle";
   runState.textContent = "IDLE";
+  traceIdLabel.textContent = "TRACE · —";
   renderPersonalization({});
 }
 

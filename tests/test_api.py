@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import json
 from uuid import uuid4
 
 from commerce_copilot.api import app
@@ -30,7 +31,9 @@ def test_frontend_is_served_with_assets():
     assert 'id="preferences-dialog"' in page.text
     assert 'id="preferences-button"' in page.text
     assert "savePreferences" in script.text
-    assert "/assets/app.js?v=20261021-3" in page.text
+    assert "/assets/app.js?v=20261021-4" in page.text
+    assert 'id="trace-id"' in page.text
+    assert "/v1/turns/stream" in script.text
 
 
 def test_health_endpoint():
@@ -59,6 +62,43 @@ def test_turn_endpoint_exposes_agent_trace():
     assert body["trace"]["answer_source"] == "local"
     assert body["trace"]["selected_agents"] == ["order_care"]
     assert body["trace"]["grounding"]["passed"] is True
+    assert len(body["trace"]["trace_id"]) == 32
+    assert {item["stage"] for item in body["trace"]["stage_timings"]} >= {
+        "planning",
+        "agent",
+        "grounding",
+        "answering",
+    }
+
+
+def test_stream_endpoint_emits_progress_and_complete_response():
+    response = client.post(
+        "/v1/turns/stream",
+        headers=demo_headers(),
+        json={"message": "推荐一个键盘，同时告诉我发货规则"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = []
+    for block in response.text.strip().split("\n\n"):
+        lines = block.splitlines()
+        event_name = lines[0].removeprefix("event: ")
+        payload = json.loads(lines[1].removeprefix("data: "))
+        events.append((event_name, payload))
+
+    event_names = [name for name, _ in events]
+    assert event_names[0] == "planning_started"
+    assert "planning_completed" in event_names
+    assert event_names.count("agent_started") == 2
+    assert event_names.count("agent_completed") == 2
+    assert "grounding_completed" in event_names
+    assert "answer_completed" in event_names
+    assert "workflow_completed" in event_names
+    assert event_names[-1] == "complete"
+    completed = events[-1][1]["response"]
+    assert completed["trace"]["grounding"]["passed"] is True
+    assert len(completed["trace"]["trace_id"]) == 32
 
 
 def test_turn_endpoint_generates_conversation_id_when_missing():

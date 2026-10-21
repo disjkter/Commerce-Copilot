@@ -147,6 +147,10 @@ py -3.12 -m venv .venv
 
 完整链路评测覆盖本地 Planner、LangGraph 分发与汇合、Agent、Grounding、回答组织、会话归属与消息持久化，并在计时结束后清理压测会话。默认使用本地确定性 Planner 和 Composer，防止批量请求产生外部 LLM 费用；只有显式添加 `--allow-llm` 才会使用当前配置的模型。报告同时记录业务成功率、Grounding 失败数、Agent 失败数以及规划和回答来源。单 Agent 报告用于定位执行层瓶颈，完整链路报告用于衡量一次真实对话的服务能力，两者不能混为同一个 QPS。
 
+## 实时执行轨迹
+
+`POST /v1/turns/stream` 使用 SSE 逐步输出 `planning_started`、`planning_completed`、`agent_started`、`agent_completed`、`grounding_completed`、`answer_completed` 和最终 `complete` 事件。每轮请求生成独立 `trace_id`，最终响应还包含 Planner、各 Agent、Grounding 和 Composer 的分阶段耗时。网页使用带 Bearer Token 的 `fetch` 流读取这些事件，在回答完成前实时更新右侧执行链路；原有 `POST /v1/turns` 非流式接口继续保留。
+
 ## 项目原则
 
 1. 事实必须来自工具或数据源，不由模型凭空补充。

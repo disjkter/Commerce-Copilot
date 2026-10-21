@@ -100,7 +100,14 @@ class GroundingSummary(BaseModel):
     issues: list[GroundingIssue] = Field(default_factory=list)
 
 
+class StageTiming(BaseModel):
+    stage: str
+    elapsed_ms: float = Field(ge=0)
+    agent_role: AgentRole | None = None
+
+
 class TurnTrace(BaseModel):
+    trace_id: str = ""
     planning_source: Literal["deepseek", "local", "local_after_error"]
     answer_source: Literal["deepseek", "local", "local_after_error"]
     selected_agents: list[AgentRole]
@@ -108,6 +115,7 @@ class TurnTrace(BaseModel):
     composer_error: str | None = None
     applied_preferences: dict[str, Any] = Field(default_factory=dict)
     grounding: GroundingSummary
+    stage_timings: list[StageTiming] = Field(default_factory=list)
 
 
 class TurnResponse(BaseModel):

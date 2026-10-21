@@ -208,6 +208,7 @@ button { color: inherit; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: clamp(21px, 2vw, 28px); letter-spacing: -0.035em; }
 h2 { margin-bottom: 0; font-size: 20px; letter-spacing: -0.025em; }
+.trace-id { display: block; margin-top: 7px; color: var(--muted); font: 700 8px/1 ui-monospace, monospace; letter-spacing: 0.1em; }
 h3 { margin: 0; font-size: 12px; letter-spacing: 0.02em; }
 
 .text-button {
