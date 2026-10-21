@@ -19,6 +19,15 @@ def test_product_request_runs_product_scout_only():
     assert result.trace.grounding.checked_claims > 0
 
 
+def test_generic_product_request_asks_for_missing_requirements():
+    result = asyncio.run(handle_turn("推荐商品"))
+
+    assert [report.role for report in result.reports] == [AgentRole.PRODUCT_SCOUT]
+    assert result.reports[0].evidence == []
+    assert "哪一类商品" in result.answer
+    assert "预算" in result.answer
+
+
 def test_mixed_request_fans_out_to_two_agents():
     result = asyncio.run(handle_turn("推荐一个键盘，另外我的订单什么时候发货？"))
 

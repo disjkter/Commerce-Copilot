@@ -8,6 +8,7 @@ from .catalog import HybridSearchHit
 from .comparison import compare_products
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
+from .personalization import needs_product_clarification
 from .retrieval import get_retriever
 
 
@@ -42,6 +43,12 @@ async def product_scout(mission: Mission) -> AgentDraft:
         else extract_budget_cents(mission.instruction)
     )
     selected_references = mission.parameters.get("selected_references")
+    if not selected_references and needs_product_clarification(product_query):
+        return (
+            "你想购买哪一类商品？还可以告诉我预算、使用场景，或者最关注的功能，我再为你筛选。",
+            [],
+            [],
+        )
     if isinstance(selected_references, list) and selected_references:
         products = await asyncio.gather(
             *(

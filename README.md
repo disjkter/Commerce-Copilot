@@ -122,9 +122,9 @@ Order Care 会依据当前一轮的问题选择状态、下单时间或商品明
 
 ## 用户偏好与个性化
 
-登录用户可以通过 `GET /v1/me/preferences` 读取偏好，通过 `PUT /v1/me/preferences` 保存预算、偏好品类、品牌、使用场景和关注点。偏好存入 PostgreSQL 的 `user_preferences` 表，不依赖进程内存。
+登录用户可以点击网页右上角“偏好设置”，保存预算、偏好品类、品牌、使用场景和关注点；也可以通过 `GET /v1/me/preferences` 和 `PUT /v1/me/preferences` 操作。偏好存入 PostgreSQL 的 `user_preferences` 表，不依赖进程内存。
 
-Supervisor 只用历史偏好补充本轮缺失的条件：用户本轮明确说出的预算或品类具有更高优先级；“第一款”等直接商品指代不会被历史偏好再次过滤。实际采用的偏好会出现在响应的 `trace.applied_preferences` 中，方便调试个性化行为。可在 `http://127.0.0.1:8010/docs` 中登录后直接试用这两个接口。
+Supervisor 只用历史偏好补充本轮缺失的条件：用户本轮明确说出的预算或品类具有更高优先级；“第一款”等直接商品指代不会被历史偏好再次过滤。实际采用的偏好会出现在响应的 `trace.applied_preferences` 和网页右侧“本轮个性化”区域中。没有有效偏好的用户只输入“推荐商品”时，Product Scout 会追问品类、预算或场景，而不是执行无意义检索。
 
 ## PostgreSQL 数据存储
 

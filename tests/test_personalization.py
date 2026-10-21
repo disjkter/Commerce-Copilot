@@ -1,5 +1,8 @@
 from commerce_copilot.contracts import AgentRole, Mission, UserPreferences
-from commerce_copilot.personalization import personalize_mission
+from commerce_copilot.personalization import (
+    needs_product_clarification,
+    personalize_mission,
+)
 
 
 def product_mission(**parameters) -> Mission:
@@ -55,3 +58,10 @@ def test_direct_product_reference_is_not_refiltered_by_saved_preferences():
     )
 
     assert result.parameters == mission.parameters
+
+
+def test_only_generic_product_request_needs_clarification():
+    assert needs_product_clarification("推荐商品") is True
+    assert needs_product_clarification("推荐商品？") is True
+    assert needs_product_clarification("推荐耳机") is False
+    assert needs_product_clarification("推荐商品 耳机 通勤") is False

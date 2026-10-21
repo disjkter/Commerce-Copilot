@@ -10,6 +10,20 @@ PRODUCT_CATEGORY_TERMS = (
     "音箱",
 )
 
+GENERIC_PRODUCT_REQUESTS = {
+    "推荐商品",
+    "推荐产品",
+    "推荐一下",
+    "有什么推荐",
+    "我想买东西",
+    "买东西",
+}
+
+
+def needs_product_clarification(query: str) -> bool:
+    normalized = "".join(query.strip().split()).rstrip("？?。！!")
+    return normalized in GENERIC_PRODUCT_REQUESTS
+
 
 def personalize_mission(mission: Mission, preferences: UserPreferences) -> Mission:
     """Use saved preferences only where the current request has no explicit value."""

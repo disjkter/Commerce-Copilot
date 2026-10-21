@@ -26,6 +26,9 @@ def test_frontend_is_served_with_assets():
     assert stylesheet.status_code == 200
     assert script.status_code == 200
     assert "renderTrace" in script.text
+    assert 'id="preferences-dialog"' in page.text
+    assert 'id="preferences-button"' in page.text
+    assert "savePreferences" in script.text
 
 
 def test_health_endpoint():

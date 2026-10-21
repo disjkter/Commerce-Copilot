@@ -44,6 +44,7 @@
           <span>LOCAL SYSTEM</span>
           <span id="session-label">NEW SESSION</span>
           <span id="user-label"></span>
+          <button id="preferences-button" class="topbar-button" type="button">偏好设置</button>
           <button id="logout-button" class="logout-button" type="button">退出</button>
           <a href="/docs" target="_blank" rel="noreferrer">API DOCS ↗</a>
         </div>
@@ -150,6 +151,14 @@
               </ol>
             </section>
 
+            <section id="personalization-section" class="personalization-card hidden">
+              <div class="section-title-row">
+                <h3>本轮个性化</h3>
+                <span>ACCOUNT PREFERENCES</span>
+              </div>
+              <div id="personalization-values" class="preference-chips"></div>
+            </section>
+
             <section class="agent-section">
               <div class="section-title-row">
                 <h3>Agent 报告</h3>
@@ -166,6 +175,46 @@
         </aside>
       </main>
     </div>
+
+    <dialog id="preferences-dialog" class="preferences-dialog" aria-labelledby="preferences-title">
+      <form id="preferences-form" class="preferences-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">PERSONALIZATION</p>
+            <h2 id="preferences-title">购物偏好</h2>
+          </div>
+          <button id="preferences-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-description">这些偏好只补充你本轮没有明确说明的条件，本轮需求始终优先。</p>
+        <div class="preference-grid">
+          <label>
+            <span>默认最高预算（元）</span>
+            <input id="preference-budget" type="number" min="0" step="1" placeholder="例如 500" />
+          </label>
+          <label>
+            <span>偏好品类</span>
+            <input id="preference-categories" type="text" placeholder="耳机、键盘" />
+          </label>
+          <label>
+            <span>偏好品牌</span>
+            <input id="preference-brands" type="text" placeholder="多个值用逗号分隔" />
+          </label>
+          <label>
+            <span>使用场景</span>
+            <input id="preference-scenarios" type="text" placeholder="通勤、办公" />
+          </label>
+          <label class="full-width">
+            <span>关注点</span>
+            <input id="preference-priorities" type="text" placeholder="降噪、轻量、续航" />
+          </label>
+        </div>
+        <p id="preferences-feedback" class="preferences-feedback" role="status"></p>
+        <div class="dialog-actions">
+          <button id="preferences-cancel" class="secondary-button" type="button">取消</button>
+          <button id="preferences-save" class="primary-button" type="submit">保存偏好</button>
+        </div>
+      </form>
+    </dialog>
 
     <template id="loading-template">
       <article class="message assistant-message loading-message">

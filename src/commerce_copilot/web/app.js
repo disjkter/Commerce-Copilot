@@ -17,6 +17,13 @@ const authToggle = document.querySelector("#auth-toggle");
 const authError = document.querySelector("#auth-error");
 const logoutButton = document.querySelector("#logout-button");
 const userLabel = document.querySelector("#user-label");
+const preferencesButton = document.querySelector("#preferences-button");
+const preferencesDialog = document.querySelector("#preferences-dialog");
+const preferencesForm = document.querySelector("#preferences-form");
+const preferencesClose = document.querySelector("#preferences-close");
+const preferencesCancel = document.querySelector("#preferences-cancel");
+const preferencesSave = document.querySelector("#preferences-save");
+const preferencesFeedback = document.querySelector("#preferences-feedback");
 let conversationId = sessionStorage.getItem("commerce_conversation_id");
 let accessToken = sessionStorage.getItem("commerce_access_token");
 let currentUsername = sessionStorage.getItem("commerce_username");
@@ -81,6 +88,10 @@ authForm.addEventListener("submit", async (event) => {
 });
 
 logoutButton.addEventListener("click", logout);
+preferencesButton.addEventListener("click", openPreferences);
+preferencesClose.addEventListener("click", () => preferencesDialog.close());
+preferencesCancel.addEventListener("click", () => preferencesDialog.close());
+preferencesForm.addEventListener("submit", savePreferences);
 
 input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => {
@@ -182,7 +193,21 @@ function renderTrace(body) {
 
   const reportContainer = document.querySelector("#agent-reports");
   reportContainer.replaceChildren(...body.reports.map(createAgentCard));
+  renderPersonalization(body.trace.applied_preferences || {});
   renderErrors(body);
+}
+
+function renderPersonalization(preferences) {
+  const section = document.querySelector("#personalization-section");
+  const values = document.querySelector("#personalization-values");
+  const entries = Object.entries(preferences);
+  section.classList.toggle("hidden", entries.length === 0);
+  values.replaceChildren(...entries.map(([key, value]) => {
+    const chip = document.createElement("span");
+    chip.className = "preference-chip";
+    chip.textContent = `${preferenceLabel(key)}：${formatPreferenceValue(key, value)}`;
+    return chip;
+  }));
 }
 
 function createAgentCard(report) {
@@ -276,6 +301,105 @@ function resetTrace() {
   traceContent.classList.add("hidden");
   runState.className = "state-badge idle";
   runState.textContent = "IDLE";
+  renderPersonalization({});
+}
+
+async function openPreferences() {
+  preferencesDialog.showModal();
+  setPreferencesFeedback("正在读取偏好……");
+  try {
+    const response = await fetch("/v1/me/preferences", {
+      headers: { "Authorization": `Bearer ${accessToken}` },
+    });
+    const body = await response.json();
+    if (response.status === 401) {
+      preferencesDialog.close();
+      logout();
+      throw new Error("登录已过期，请重新登录");
+    }
+    if (!response.ok) throw new Error(readError(body, "读取偏好失败"));
+    fillPreferencesForm(body);
+    setPreferencesFeedback("本轮明确条件会优先于这些默认偏好。");
+  } catch (error) {
+    setPreferencesFeedback(error.message, "error");
+  }
+}
+
+async function savePreferences(event) {
+  event.preventDefault();
+  preferencesSave.disabled = true;
+  setPreferencesFeedback("正在保存……");
+  const budgetYuan = document.querySelector("#preference-budget").value;
+  const payload = {
+    max_budget_cents: budgetYuan === "" ? null : Math.round(Number(budgetYuan) * 100),
+    preferred_categories: splitTerms(document.querySelector("#preference-categories").value),
+    preferred_brands: splitTerms(document.querySelector("#preference-brands").value),
+    scenarios: splitTerms(document.querySelector("#preference-scenarios").value),
+    priorities: splitTerms(document.querySelector("#preference-priorities").value),
+  };
+  try {
+    const response = await fetch("/v1/me/preferences", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (response.status === 401) {
+      preferencesDialog.close();
+      logout();
+      throw new Error("登录已过期，请重新登录");
+    }
+    if (!response.ok) throw new Error(readError(body, "保存偏好失败"));
+    fillPreferencesForm(body);
+    setPreferencesFeedback("偏好已保存，下次商品推荐会自动补充缺失条件。", "success");
+  } catch (error) {
+    setPreferencesFeedback(error.message, "error");
+  } finally {
+    preferencesSave.disabled = false;
+  }
+}
+
+function fillPreferencesForm(preferences) {
+  document.querySelector("#preference-budget").value = preferences.max_budget_cents == null
+    ? ""
+    : preferences.max_budget_cents / 100;
+  document.querySelector("#preference-categories").value = preferences.preferred_categories.join("、");
+  document.querySelector("#preference-brands").value = preferences.preferred_brands.join("、");
+  document.querySelector("#preference-scenarios").value = preferences.scenarios.join("、");
+  document.querySelector("#preference-priorities").value = preferences.priorities.join("、");
+}
+
+function splitTerms(value) {
+  return [...new Set(value.split(/[,，、]/).map((item) => item.trim()).filter(Boolean))];
+}
+
+function setPreferencesFeedback(message, state = "") {
+  preferencesFeedback.textContent = message;
+  preferencesFeedback.className = `preferences-feedback ${state}`.trim();
+}
+
+function readError(body, fallback) {
+  if (typeof body.detail === "string") return body.detail;
+  if (Array.isArray(body.detail)) return body.detail.map((item) => item.msg).join("；");
+  return fallback;
+}
+
+function preferenceLabel(key) {
+  return {
+    max_budget_cents: "预算",
+    preferred_categories: "品类",
+    preferred_brands: "品牌",
+    scenarios: "场景",
+    priorities: "关注点",
+  }[key] || key;
+}
+
+function formatPreferenceValue(key, value) {
+  if (key === "max_budget_cents") return `${Number(value) / 100} 元`;
+  return Array.isArray(value) ? value.join("、") : String(value);
 }
 
 function setRunning(running, result = "") {
