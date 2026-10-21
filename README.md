@@ -131,6 +131,14 @@ py -3.12 -m venv .venv
 
 性能评测直接并发调用 Agent 执行入口，输出整体及各角色的 QPS、成功率、失败数与 P50/P95/P99 延迟。QPS 按“完成请求数 ÷ 整段压测墙钟时间”计算；当前结果衡量 Agent 执行层，不包含浏览器渲染和 HTTP 网络耗时。建议分别使用 1、5、10、20 等并发度多轮运行，观察吞吐增长、尾延迟和数据库连接池瓶颈，不把单次本机结果当作生产容量结论。
 
+自动执行并发阶梯压测：
+
+```powershell
+.\.venv\Scripts\python.exe -m commerce_copilot.performance --agent product_scout --requests 1000 --sweep 1,5,10,20,50,100 --warmup 20 --output artifacts\product-scout-sweep.json
+```
+
+阶梯报告会给出实测峰值，以及“达到至少 90% 峰值 QPS 且成功率不低于 99%”的最低推荐并发度。Order Care 默认覆盖发货政策、本人订单状态和非本人订单三条场景；也可以使用 `--scenario order_policy`、`--scenario order_status_owned` 或 `--scenario order_status_not_owned` 单独测试。场景成功率不仅检查 Agent 是否报错，还会检查回答中是否出现预期的关键结果。
+
 ## 项目原则
 
 1. 事实必须来自工具或数据源，不由模型凭空补充。
