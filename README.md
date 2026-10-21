@@ -72,6 +72,7 @@ src/commerce_copilot/
 ├─ orchestrator.py      # LangGraph 状态图、并发分发与汇合
 ├─ planning.py          # DeepSeek Planner 与本地降级
 ├─ agents.py            # Product Scout / Order Care / Conversation Guide
+├─ performance.py       # Agent QPS、成功率与分位延迟压测
 ├─ retrieval.py         # 关键词、向量召回与 RRF
 ├─ personalization.py   # 偏好合并、显式条件优先级
 ├─ grounding.py         # Claim–Evidence 校验
@@ -121,6 +122,14 @@ py -3.12 -m venv .venv
 ```
 
 评测使用固定查询集，分别执行 FTS5 基线和混合检索，并输出 Recall@K、Hit Rate@K 与 MRR。固定小数据集用于回归测试和演示工程链路，不替代生产数据上的人工相关性标注。
+
+运行 Agent 性能评测：
+
+```powershell
+.\.venv\Scripts\python.exe -m commerce_copilot.performance --agent all --requests 300 --concurrency 20 --warmup 10 --output artifacts\agent-performance.json
+```
+
+性能评测直接并发调用 Agent 执行入口，输出整体及各角色的 QPS、成功率、失败数与 P50/P95/P99 延迟。QPS 按“完成请求数 ÷ 整段压测墙钟时间”计算；当前结果衡量 Agent 执行层，不包含浏览器渲染和 HTTP 网络耗时。建议分别使用 1、5、10、20 等并发度多轮运行，观察吞吐增长、尾延迟和数据库连接池瓶颈，不把单次本机结果当作生产容量结论。
 
 ## 项目原则
 
