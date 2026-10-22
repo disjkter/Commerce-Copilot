@@ -1,4 +1,10 @@
-from commerce_copilot.database import CatalogRepository
+import pytest
+
+from commerce_copilot.database import (
+    PRODUCT_EMBEDDING_DIMENSIONS,
+    CatalogRepository,
+    _vector_literal,
+)
 from commerce_copilot.contracts import Evidence, UserPreferences
 from commerce_copilot.security import hash_password
 
@@ -65,6 +71,32 @@ def test_postgres_reports_its_lexical_backend():
 
     assert repository.lexical_source == "postgres_fts"
     repository.engine.dispose()
+
+
+def test_vector_literal_requires_the_catalog_dimension():
+    values = [0.0] * PRODUCT_EMBEDDING_DIMENSIONS
+    values[3] = 0.25
+
+    literal = _vector_literal(values)
+
+    assert literal.startswith("[0,0,0,0.25,")
+    assert literal.endswith("]")
+    with pytest.raises(ValueError, match="1024 dimensions"):
+        _vector_literal([0.0, 1.0])
+
+
+def test_sqlite_keeps_vector_storage_in_process(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+
+    assert repository.vector_source == "vector"
+    assert repository.get_product_embedding_metadata() == {}
+    assert (
+        repository.save_product_embeddings(
+            {"product": [0.0] * PRODUCT_EMBEDDING_DIMENSIONS},
+            model="test-model",
+        )
+        == 0
+    )
 
 
 def test_conversation_turns_are_returned_in_chronological_order(tmp_path):

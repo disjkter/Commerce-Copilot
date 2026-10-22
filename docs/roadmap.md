@@ -34,7 +34,8 @@
 
 - [x] PostgreSQL 使用持久化 `tsvector`、GIN 索引与 `ts_rank_cd` 完成关键词召回
 - [ ] 接入 BGE 中文 Embedding
-- [ ] PostgreSQL 安装并启用 pgvector
+- [x] PostgreSQL 安装并启用 pgvector
+- [x] 增加 1024 维商品向量列、HNSW 索引及按模型版本和内容哈希的增量更新
 - [ ] 商品向量离线构建与增量更新
 - [ ] 对比 FTS、Vector、Hybrid 三组检索结果
 - [ ] 扩充人工标注查询集，报告 Recall@K、MRR、NDCG@K

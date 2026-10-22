@@ -20,7 +20,7 @@ Commerce Copilot 是一个面向商品推荐和订单售后的多 Agent 电商�
 - 实现关键词与离线向量双通道召回，通过 RRF 融合排序；将品类、预算和库存下推为数据库硬约束，避免语义相关性突破业务条件。
 - 设计 Claim–Evidence Grounding，逐条校验事实引用、字段和值；DeepSeek 超时、非法 JSON 或校验失败时使用本地确定性逻辑降级。
 - 基于 PostgreSQL、SQLAlchemy Repository 和 Alembic 管理用户、商品、订单、会话、Evidence 与偏好数据，实现 Token 鉴权、订单归属和会话隔离。
-- 支持多轮商品指代、确定性商品对比、个性化偏好以及可解释候补推荐；使用 94 个自动化测试覆盖规划、检索、Grounding、鉴权和迁移流程。
+- 支持多轮商品指代、确定性商品对比、个性化偏好以及可解释候补推荐；使用 97 个自动化测试覆盖规划、检索、Grounding、鉴权和迁移流程。
 
 不要在简历中加入尚未完成的 SSE、BGE、pgvector、Redis、云部署和压测数据。
 

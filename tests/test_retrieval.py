@@ -1,4 +1,4 @@
-from commerce_copilot.database import CatalogRepository
+from commerce_copilot.database import PRODUCT_EMBEDDING_DIMENSIONS, CatalogRepository
 from commerce_copilot.retrieval import FeatureHashVectorizer, HybridRetriever
 
 
@@ -16,6 +16,12 @@ def test_feature_hash_vectorizer_is_deterministic():
 
     assert first == second
     assert abs(sum(value * value for value in first) - 1.0) < 1e-9
+
+
+def test_default_vectorizer_matches_postgres_embedding_dimension():
+    vector = FeatureHashVectorizer().encode("通勤无线耳机")
+
+    assert len(vector) == PRODUCT_EMBEDDING_DIMENSIONS
 
 
 def test_vector_channel_recalls_description_when_fts_has_no_terms(tmp_path):

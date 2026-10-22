@@ -5,7 +5,14 @@ from functools import lru_cache
 from typing import Protocol
 
 from .catalog import HybridSearchHit, Product
-from .database import CatalogRepository, get_catalog
+from .database import (
+    PRODUCT_EMBEDDING_DIMENSIONS,
+    CatalogRepository,
+    get_catalog,
+)
+
+
+FEATURE_HASH_MODEL = f"feature-hash-v1-{PRODUCT_EMBEDDING_DIMENSIONS}"
 
 
 class Vectorizer(Protocol):
@@ -15,7 +22,7 @@ class Vectorizer(Protocol):
 class FeatureHashVectorizer:
     """Dependency-free vectorizer used as the offline retrieval baseline."""
 
-    def __init__(self, dimensions: int = 512):
+    def __init__(self, dimensions: int = PRODUCT_EMBEDDING_DIMENSIONS):
         self.dimensions = dimensions
 
     def encode(self, text: str) -> list[float]:
@@ -44,6 +51,32 @@ class HybridRetriever:
         self.rrf_k = rrf_k
         self.min_vector_score = min_vector_score
 
+    def index_catalog(self) -> int:
+        """Build the current vectorizer's product index in PostgreSQL."""
+        if self.repository.dialect != "postgresql":
+            return 0
+        products = self.repository.list_products(in_stock_only=False)
+        existing = self.repository.get_product_embedding_metadata()
+        source_texts = {
+            product.product_id: _product_text(product) for product in products
+        }
+        source_hashes = {
+            product_id: hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for product_id, text in source_texts.items()
+        }
+        embeddings = {}
+        for product_id, text in source_texts.items():
+            expected = (FEATURE_HASH_MODEL, source_hashes[product_id])
+            if existing.get(product_id) != expected:
+                embeddings[product_id] = self.vectorizer.encode(text)
+        if not embeddings:
+            return 0
+        return self.repository.save_product_embeddings(
+            embeddings,
+            model=FEATURE_HASH_MODEL,
+            source_hashes=source_hashes,
+        )
+
     def search(
         self,
         query: str,
@@ -61,31 +94,58 @@ class HybridRetriever:
             in_stock_only=in_stock_only,
             limit=recall_limit,
         )
-        candidates = self.repository.list_products(
-            max_price_cents=max_price_cents,
-            categories=categories,
-            in_stock_only=in_stock_only,
-        )
-
         lexical_ranks = {
             hit.product.product_id: rank
             for rank, hit in enumerate(lexical_hits, start=1)
         }
-        lexical_categories = {hit.product.category for hit in lexical_hits}
         query_vector = self.vectorizer.encode(query)
-        vector_scores = [
-            (product.product_id, _cosine(query_vector, self.vectorizer.encode(_product_text(product))))
-            for product in candidates
-            if not lexical_categories or product.category in lexical_categories
-        ]
-        vector_scores = [item for item in vector_scores if item[1] >= self.min_vector_score]
-        vector_scores.sort(key=lambda item: (-item[1], item[0]))
+        if self.repository.dialect == "postgresql":
+            vector_hits = self.repository.search_products_by_vector(
+                query_vector,
+                max_price_cents=max_price_cents,
+                categories=categories,
+                in_stock_only=in_stock_only,
+                min_score=self.min_vector_score,
+                limit=recall_limit,
+            )
+            vector_scores = [
+                (hit.product.product_id, hit.vector_score)
+                for hit in vector_hits
+            ]
+            products_by_id = {
+                hit.product.product_id: hit.product
+                for hit in [*lexical_hits, *vector_hits]
+            }
+        else:
+            candidates = self.repository.list_products(
+                max_price_cents=max_price_cents,
+                categories=categories,
+                in_stock_only=in_stock_only,
+            )
+            lexical_categories = {hit.product.category for hit in lexical_hits}
+            vector_scores = [
+                (
+                    product.product_id,
+                    _cosine(
+                        query_vector,
+                        self.vectorizer.encode(_product_text(product)),
+                    ),
+                )
+                for product in candidates
+                if not lexical_categories or product.category in lexical_categories
+            ]
+            vector_scores = [
+                item for item in vector_scores if item[1] >= self.min_vector_score
+            ]
+            vector_scores.sort(key=lambda item: (-item[1], item[0]))
+            products_by_id = {
+                product.product_id: product for product in candidates
+            }
         vector_ranks = {
             product_id: rank
             for rank, (product_id, _) in enumerate(vector_scores[:recall_limit], start=1)
         }
 
-        products_by_id = {product.product_id: product for product in candidates}
         candidate_ids = lexical_ranks.keys() | vector_ranks.keys()
         hits: list[HybridSearchHit] = []
         for product_id in candidate_ids:
@@ -98,7 +158,7 @@ class HybridRetriever:
                 sources.append(self.repository.lexical_source)
             if vector_rank is not None:
                 fused_score += 1 / (self.rrf_k + vector_rank)
-                sources.append("vector")
+                sources.append(self.repository.vector_source)
             hits.append(
                 HybridSearchHit(
                     product=products_by_id[product_id],
@@ -149,4 +209,6 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 @lru_cache
 def get_retriever() -> HybridRetriever:
-    return HybridRetriever(get_catalog())
+    retriever = HybridRetriever(get_catalog())
+    retriever.index_catalog()
+    return retriever

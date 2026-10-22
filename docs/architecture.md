@@ -125,7 +125,7 @@ Claim.expected_value     → Evidence 中的真实值
 | `orchestrator.py` | LangGraph 状态、fan-out、汇合与请求入口 |
 | `planning.py` | DeepSeek 结构化规划和本地规则降级 |
 | `agents.py` | 三个领域 Agent 的工具调用和报告生成 |
-| `retrieval.py` | 关键词/向量双通道及 RRF 融合 |
+| `retrieval.py` | PostgreSQL FTS、pgvector/HNSW、本地向量基线及 RRF 融合 |
 | `personalization.py` | 偏好合并和本轮显式约束优先级 |
 | `grounding.py` | Claim–Evidence 一致性校验 |
 | `answering.py` | 证据化回答生成与本地降级 |

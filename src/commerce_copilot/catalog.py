@@ -19,6 +19,11 @@ class ProductSearchHit(BaseModel):
     lexical_score: float
 
 
+class ProductVectorSearchHit(BaseModel):
+    product: Product
+    vector_score: float
+
+
 class HybridSearchHit(BaseModel):
     product: Product
     fused_score: float

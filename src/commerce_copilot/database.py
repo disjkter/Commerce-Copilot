@@ -1,6 +1,6 @@
 import re
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
@@ -28,8 +28,9 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import Engine, RowMapping
+from pgvector.sqlalchemy import VECTOR as _PGVectorType  # registers reflection support
 
-from .catalog import Product, ProductSearchHit
+from .catalog import Product, ProductSearchHit, ProductVectorSearchHit
 from .config import get_settings
 from .contracts import ConversationTurn, Evidence, UserPreferences, UserRecord
 from .support import OrderItem, OrderRecord, PolicyRecord
@@ -98,6 +99,8 @@ DEMO_PRODUCTS = (
         tags=["鼠标", "无线", "蓝牙", "轻量", "办公"],
     ),
 )
+
+PRODUCT_EMBEDDING_DIMENSIONS = 1024
 
 
 KNOWN_TERMS = (
@@ -263,6 +266,10 @@ class CatalogRepository:
     def lexical_source(self) -> str:
         """Return the lexical backend name exposed in retrieval evidence."""
         return "fts5" if self.dialect == "sqlite" else "postgres_fts"
+
+    @property
+    def vector_source(self) -> str:
+        return "vector" if self.dialect == "sqlite" else "pgvector"
 
     def initialize(self) -> None:
         if self._ready:
@@ -588,6 +595,122 @@ class CatalogRepository:
         with self.engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
         return [_row_to_product(row) for row in rows]
+
+    def save_product_embeddings(
+        self,
+        embeddings: dict[str, Sequence[float]],
+        *,
+        model: str,
+        source_hashes: dict[str, str] | None = None,
+    ) -> int:
+        """Persist precomputed product vectors in PostgreSQL.
+
+        SQLite deliberately keeps its in-process vector baseline so unit tests
+        and the zero-setup demo do not require a PostgreSQL extension.
+        """
+        self.initialize()
+        if self.dialect != "postgresql":
+            return 0
+        statement = text(
+            """
+            UPDATE products
+            SET embedding = CAST(:embedding AS vector),
+                embedding_model = :model,
+                embedding_source_hash = :source_hash,
+                embedding_updated_at = CURRENT_TIMESTAMP
+            WHERE product_id = :product_id
+            """
+        )
+        updated = 0
+        with self.engine.begin() as connection:
+            for product_id, embedding in embeddings.items():
+                result = connection.execute(
+                    statement,
+                    {
+                        "product_id": product_id,
+                        "embedding": _vector_literal(embedding),
+                        "model": model,
+                        "source_hash": (source_hashes or {}).get(product_id),
+                    },
+                )
+                updated += result.rowcount
+        return updated
+
+    def get_product_embedding_metadata(
+        self,
+    ) -> dict[str, tuple[str | None, str | None]]:
+        self.initialize()
+        if self.dialect != "postgresql":
+            return {}
+        statement = text(
+            """
+            SELECT product_id, embedding_model, embedding_source_hash
+            FROM products
+            """
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        return {
+            row["product_id"]: (
+                row["embedding_model"],
+                row["embedding_source_hash"],
+            )
+            for row in rows
+        }
+
+    def search_products_by_vector(
+        self,
+        query_vector: Sequence[float],
+        *,
+        max_price_cents: int | None = None,
+        categories: list[str] | None = None,
+        in_stock_only: bool = True,
+        min_score: float = 0.08,
+        limit: int = 20,
+    ) -> list[ProductVectorSearchHit]:
+        self.initialize()
+        if self.dialect != "postgresql":
+            raise RuntimeError("database vector search requires PostgreSQL")
+
+        parameters: dict[str, object] = {
+            "query_vector": _vector_literal(query_vector),
+            "max_distance": 1.0 - min_score,
+            "limit": limit,
+        }
+        conditions = [
+            "p.embedding IS NOT NULL",
+            "p.embedding <=> CAST(:query_vector AS vector) <= :max_distance",
+        ]
+        if max_price_cents is not None:
+            conditions.append("p.price_cents <= :max_price_cents")
+            parameters["max_price_cents"] = max_price_cents
+        if categories:
+            placeholders = []
+            for index, category in enumerate(categories):
+                key = f"vector_category_{index}"
+                placeholders.append(f":{key}")
+                parameters[key] = category
+            conditions.append(f"p.category IN ({', '.join(placeholders)})")
+        if in_stock_only:
+            conditions.append("p.stock > 0")
+
+        statement = text(
+            f"""
+            SELECT p.product_id, p.title, p.category, p.brand, p.description,
+                   p.price_cents, p.rating, p.review_count, p.stock, p.tags,
+                   1 - (p.embedding <=> CAST(:query_vector AS vector))
+                       AS vector_score
+            FROM products AS p
+            WHERE {' AND '.join(conditions)}
+            ORDER BY p.embedding <=> CAST(:query_vector AS vector),
+                     p.rating DESC,
+                     p.review_count DESC
+            LIMIT :limit
+            """
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement, parameters).mappings().all()
+        return [_row_to_vector_hit(row) for row in rows]
 
     def get_product(self, product_id: str) -> Product | None:
         self.initialize()
@@ -958,6 +1081,13 @@ def _row_to_hit(row: RowMapping) -> ProductSearchHit:
     )
 
 
+def _row_to_vector_hit(row: RowMapping) -> ProductVectorSearchHit:
+    return ProductVectorSearchHit(
+        product=_row_to_product(row),
+        vector_score=row["vector_score"],
+    )
+
+
 def _row_to_product(row: RowMapping) -> Product:
     return Product(
         product_id=row["product_id"],
@@ -979,6 +1109,15 @@ def _row_to_user(row: RowMapping) -> UserRecord:
         username=row["username"],
         password_hash=row["password_hash"],
     )
+
+
+def _vector_literal(values: Sequence[float]) -> str:
+    if len(values) != PRODUCT_EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            "product embedding must contain "
+            f"{PRODUCT_EMBEDDING_DIMENSIONS} dimensions"
+        )
+    return "[" + ",".join(format(float(value), ".12g") for value in values) + "]"
 
 
 @lru_cache

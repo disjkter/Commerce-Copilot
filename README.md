@@ -26,13 +26,13 @@ Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是
 |---|---|
 | 多 Agent | LangGraph Supervisor、`Send` 并发 fan-out、结果汇合与故障隔离 |
 | LLM | DeepSeek 结构化任务规划、证据化回答、本地 Planner/Composer 降级 |
-| 检索 | PostgreSQL FTS/GIN、SQLite FTS5/BM25、离线向量召回、RRF 融合、硬约束过滤、候补推荐 |
+| 检索 | PostgreSQL FTS/GIN、pgvector/HNSW、SQLite FTS5/BM25、RRF 融合、硬约束过滤、候补推荐 |
 | 可信回答 | Evidence、Claim、字段级 Grounding、失败关闭 |
 | 多轮能力 | conversation_id、商品序号指代、确定性对比、预算放宽确认 |
 | 个性化 | 用户预算、品类、品牌、场景和关注点持久化，本轮条件优先 |
 | 数据层 | PostgreSQL、SQLAlchemy Repository、Alembic；测试支持临时 SQLite |
 | 安全 | PBKDF2 密码哈希、签名 Token、订单归属和会话隔离 |
-| 工程质量 | 94 个自动化测试、离线检索评测、Web Trace、真实 Git 迭代历史 |
+| 工程质量 | 97 个自动化测试、离线检索评测、Web Trace、真实 Git 迭代历史 |
 
 ## 项目文档
 
@@ -169,7 +169,7 @@ Product Scout 的第一阶段检索流程为：
 ```text
 用户需求 → 预算提取 → SQL 价格/库存过滤
                     ├─ PostgreSQL FTS/GIN 或 SQLite FTS5/BM25 召回
-                    └─ 本地向量召回
+                    └─ pgvector/HNSW 或本地向量召回
                               ↓
                          RRF 排名融合
                               ↓
@@ -236,6 +236,15 @@ python -m alembic check
 ```
 
 `upgrade head` 将数据库升级到最新版本，`current` 显示当前版本，`check` 检查 SQLAlchemy 模型是否存在尚未生成的结构变化。PostgreSQL 运行时不会再调用 `metadata.create_all()` 偷偷修改表结构；如果没有执行迁移，应用会明确提示先运行 `alembic upgrade head`。测试使用临时 SQLite，并会验证第一版迁移可以从空数据库完整升级和回滚。
+
+PostgreSQL 向量检索使用 pgvector。Windows 首次安装 pgvector 二进制文件后，需要由数据库管理员执行一次扩展启用，再由应用账号运行迁移：
+
+```powershell
+.\scripts\enable_pgvector.ps1
+.\scripts\migrate_database.ps1
+```
+
+商品向量列固定为 1024 维并使用余弦距离 HNSW 索引。当前仍以 `feature-hash-v1-1024` 作为无外部模型依赖的基线；系统保存向量模型版本与商品文本哈希，只重建发生变化的商品。BGE 模型接入属于下一里程碑。
 
 ## Grounding
 

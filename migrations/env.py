@@ -26,9 +26,18 @@ target_metadata = metadata
 
 def include_object(object_, name, type_, reflected, compare_to) -> bool:
     """Ignore PostgreSQL-only FTS objects managed by an explicit migration."""
-    if reflected and type_ == "column" and name == "search_vector":
+    if reflected and type_ == "column" and name in {
+        "search_vector",
+        "embedding",
+        "embedding_model",
+        "embedding_source_hash",
+        "embedding_updated_at",
+    }:
         return False
-    if reflected and type_ == "index" and name == "products_search_vector_gin":
+    if reflected and type_ == "index" and name in {
+        "products_search_vector_gin",
+        "products_embedding_hnsw",
+    }:
         return False
     return True
 
