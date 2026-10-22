@@ -26,13 +26,13 @@ Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是
 |---|---|
 | 多 Agent | LangGraph Supervisor、`Send` 并发 fan-out、结果汇合与故障隔离 |
 | LLM | DeepSeek 结构化任务规划、证据化回答、本地 Planner/Composer 降级 |
-| 检索 | FTS/BM25、离线向量召回、RRF 融合、硬约束过滤、候补推荐 |
+| 检索 | PostgreSQL FTS/GIN、SQLite FTS5/BM25、离线向量召回、RRF 融合、硬约束过滤、候补推荐 |
 | 可信回答 | Evidence、Claim、字段级 Grounding、失败关闭 |
 | 多轮能力 | conversation_id、商品序号指代、确定性对比、预算放宽确认 |
 | 个性化 | 用户预算、品类、品牌、场景和关注点持久化，本轮条件优先 |
 | 数据层 | PostgreSQL、SQLAlchemy Repository、Alembic；测试支持临时 SQLite |
 | 安全 | PBKDF2 密码哈希、签名 Token、订单归属和会话隔离 |
-| 工程质量 | 73 个自动化测试、离线检索评测、Web Trace、真实 Git 迭代历史 |
+| 工程质量 | 94 个自动化测试、离线检索评测、Web Trace、真实 Git 迭代历史 |
 
 ## 项目文档
 
@@ -121,7 +121,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m commerce_copilot.evaluation --k 3 --details
 ```
 
-评测使用固定查询集，分别执行 FTS5 基线和混合检索，并输出 Recall@K、Hit Rate@K 与 MRR。固定小数据集用于回归测试和演示工程链路，不替代生产数据上的人工相关性标注。
+评测使用固定查询集，分别执行当前数据库的关键词基线和混合检索，并输出 Recall@K、Hit Rate@K 与 MRR。PostgreSQL 使用持久化 `tsvector`、GIN 索引和 `ts_rank_cd`，SQLite 使用 FTS5/BM25。固定小数据集用于回归测试和演示工程链路，不替代生产数据上的人工相关性标注。
 
 运行 Agent 性能评测：
 
@@ -168,7 +168,7 @@ Product Scout 的第一阶段检索流程为：
 
 ```text
 用户需求 → 预算提取 → SQL 价格/库存过滤
-                    ├─ FTS5 / BM25 召回
+                    ├─ PostgreSQL FTS/GIN 或 SQLite FTS5/BM25 召回
                     └─ 本地向量召回
                               ↓
                          RRF 排名融合

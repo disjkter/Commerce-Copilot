@@ -150,7 +150,7 @@ def compare_retrievers(
         ]
 
     return (
-        evaluate("fts5", lexical_search, cases, k=k),
+        evaluate(repository.lexical_source, lexical_search, cases, k=k),
         evaluate("hybrid_rrf", hybrid_search, cases, k=k),
     )
 

@@ -95,7 +95,7 @@ class HybridRetriever:
             sources: list[str] = []
             if lexical_rank is not None:
                 fused_score += 1 / (self.rrf_k + lexical_rank)
-                sources.append("fts5")
+                sources.append(self.repository.lexical_source)
             if vector_rank is not None:
                 fused_score += 1 / (self.rrf_k + vector_rank)
                 sources.append("vector")

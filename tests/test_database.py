@@ -52,6 +52,21 @@ def test_unknown_term_returns_no_result(tmp_path):
     assert repository.search_products("咖啡机") == []
 
 
+def test_sqlite_reports_its_lexical_backend(tmp_path):
+    repository = CatalogRepository(tmp_path / "catalog.db")
+
+    assert repository.lexical_source == "fts5"
+
+
+def test_postgres_reports_its_lexical_backend():
+    repository = CatalogRepository(
+        "postgresql+psycopg://user:password@127.0.0.1:5432/database"
+    )
+
+    assert repository.lexical_source == "postgres_fts"
+    repository.engine.dispose()
+
+
 def test_conversation_turns_are_returned_in_chronological_order(tmp_path):
     repository = CatalogRepository(tmp_path / "catalog.db")
     repository.add_conversation_turn("session-a", "第一问", "第一答")

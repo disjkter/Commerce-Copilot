@@ -259,6 +259,11 @@ class CatalogRepository:
     def dialect(self) -> str:
         return self.engine.dialect.name
 
+    @property
+    def lexical_source(self) -> str:
+        """Return the lexical backend name exposed in retrieval evidence."""
+        return "fts5" if self.dialect == "sqlite" else "postgres_fts"
+
     def initialize(self) -> None:
         if self._ready:
             return
@@ -519,19 +524,14 @@ class CatalogRepository:
         in_stock_only: bool,
         limit: int,
     ) -> list[ProductSearchHit]:
-        terms = _search_terms(query)
-        if not terms:
+        search_query = " ".join(_search_terms(query))
+        if not search_query:
             return []
-        document = "LOWER(CONCAT_WS(' ', p.title, p.category, p.brand, p.description, p.tags))"
-        parameters: dict[str, object] = {"limit": limit}
-        term_conditions: list[str] = []
-        score_parts: list[str] = []
-        for index, term in enumerate(terms):
-            key = f"term_{index}"
-            parameters[key] = f"%{term.casefold()}%"
-            term_conditions.append(f"{document} LIKE :{key}")
-            score_parts.append(f"CASE WHEN {document} LIKE :{key} THEN 1 ELSE 0 END")
-        conditions = [f"({' AND '.join(term_conditions)})"]
+        parameters: dict[str, object] = {
+            "search_query": search_query,
+            "limit": limit,
+        }
+        conditions = ["p.search_vector @@ search.query"]
         if max_price_cents is not None:
             conditions.append("p.price_cents <= :max_price_cents")
             parameters["max_price_cents"] = max_price_cents
@@ -544,15 +544,19 @@ class CatalogRepository:
             conditions.append(f"p.category IN ({', '.join(placeholders)})")
         if in_stock_only:
             conditions.append("p.stock > 0")
-        score = " + ".join(score_parts)
         statement = text(
             f"""
+            WITH search AS (
+                SELECT plainto_tsquery('simple', :search_query) AS query
+            )
             SELECT p.product_id, p.title, p.category, p.brand, p.description,
                    p.price_cents, p.rating, p.review_count, p.stock, p.tags,
-                   -({score})::float AS lexical_score
+                   ts_rank_cd(p.search_vector, search.query, 32)::float
+                       AS lexical_score
             FROM products AS p
+            CROSS JOIN search
             WHERE {' AND '.join(conditions)}
-            ORDER BY ({score}) DESC, p.rating DESC, p.review_count DESC
+            ORDER BY lexical_score DESC, p.rating DESC, p.review_count DESC
             LIMIT :limit
             """
         )

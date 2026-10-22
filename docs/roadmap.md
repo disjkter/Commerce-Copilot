@@ -32,6 +32,7 @@
 
 目标：从教学型特征哈希向量升级到可量化的中文语义检索。
 
+- [x] PostgreSQL 使用持久化 `tsvector`、GIN 索引与 `ts_rank_cd` 完成关键词召回
 - [ ] 接入 BGE 中文 Embedding
 - [ ] PostgreSQL 安装并启用 pgvector
 - [ ] 商品向量离线构建与增量更新

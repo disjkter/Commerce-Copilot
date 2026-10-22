@@ -24,6 +24,15 @@ config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = metadata
 
 
+def include_object(object_, name, type_, reflected, compare_to) -> bool:
+    """Ignore PostgreSQL-only FTS objects managed by an explicit migration."""
+    if reflected and type_ == "column" and name == "search_vector":
+        return False
+    if reflected and type_ == "index" and name == "products_search_vector_gin":
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
@@ -31,6 +40,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -47,6 +57,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
         )
         with context.begin_transaction():
             context.run_migrations()
