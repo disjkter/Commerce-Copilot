@@ -24,6 +24,9 @@ dependencies = [
 dev = [
   "pytest>=8,<10",
 ]
+semantic = [
+  "sentence-transformers>=5,<6",
+]
 
 [project.scripts]
 commerce-copilot = "commerce_copilot.main:run"

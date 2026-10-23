@@ -143,6 +143,25 @@ def test_product_ordinal_uses_previous_evidence_order():
     assert "相差 140.00 元" in comparison.answer
 
 
+def test_product_advantage_follow_up_uses_descriptive_evidence():
+    conversation_id = f"advantages-{uuid4().hex}"
+    first = asyncio.run(handle_turn("推荐一款静音办公键盘", conversation_id))
+    assert first.reports[0].evidence
+
+    result = asyncio.run(handle_turn("第一款有什么优势？", conversation_id))
+    product_report = next(
+        report for report in result.reports if report.role == AgentRole.PRODUCT_SCOUT
+    )
+    evidence = product_report.evidence[0]
+
+    assert evidence.attributes["description"]
+    assert "静音" in evidence.attributes["tags"]
+    assert "主要特点" in result.answer
+    assert "热插拔静音轴" in result.answer
+    assert "库存" not in result.answer
+    assert result.trace.grounding.passed is True
+
+
 def test_unknown_request_uses_conversation_guide():
     result = asyncio.run(handle_turn("你好"))
 

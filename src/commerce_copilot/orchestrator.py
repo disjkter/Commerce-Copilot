@@ -42,6 +42,7 @@ class WorkflowState(TypedDict, total=False):
     reports: Annotated[list[AgentReport], operator.add]
     answer: str
     planning_source: str
+    query_understanding: object
     planner_error: str | None
     answer_source: str
     composer_error: str | None
@@ -106,6 +107,7 @@ async def plan(state: WorkflowState) -> dict[str, object]:
     return {
         "missions": missions,
         "planning_source": decision.source,
+        "query_understanding": decision.understanding,
         "planner_error": decision.error,
         "stage_timings": [StageTiming(stage="planning", elapsed_ms=elapsed_ms)],
     }
@@ -351,6 +353,7 @@ async def _handle_turn(
             applied_preferences=_collect_applied_preferences(
                 result.get("missions", [])
             ),
+            query_understanding=result.get("query_understanding"),
             grounding=result["grounding"],
             stage_timings=[
                 StageTiming(

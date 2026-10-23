@@ -61,6 +61,7 @@ def test_turn_endpoint_exposes_agent_trace():
     assert body["trace"]["planning_source"] == "local"
     assert body["trace"]["answer_source"] == "local"
     assert body["trace"]["selected_agents"] == ["order_care"]
+    assert body["trace"]["query_understanding"]["intents"] == ["order_care"]
     assert body["trace"]["grounding"]["passed"] is True
     assert len(body["trace"]["trace_id"]) == 32
     assert {item["stage"] for item in body["trace"]["stage_timings"]} >= {

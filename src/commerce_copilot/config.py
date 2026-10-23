@@ -22,6 +22,11 @@ class Settings:
     access_token_minutes: int = 120
     database_url: str = ""
     log_level: str = "INFO"
+    embedding_provider: str = "feature_hash"
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_model_path: str = ""
+    embedding_device: str = "cpu"
+    retrieval_strategy: str = "adaptive"
 
 
 @lru_cache
@@ -41,5 +46,10 @@ def get_settings() -> Settings:
         access_token_minutes=int(os.getenv("ACCESS_TOKEN_MINUTES", "120")),
         database_url=os.getenv("DATABASE_URL", ""),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "feature_hash"),
+        embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+        embedding_model_path=os.getenv("EMBEDDING_MODEL_PATH", ""),
+        embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
+        retrieval_strategy=os.getenv("RETRIEVAL_STRATEGY", "adaptive").casefold(),
     )
 

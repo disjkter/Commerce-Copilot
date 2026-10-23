@@ -2,6 +2,7 @@ import hashlib
 import math
 import re
 from functools import lru_cache
+from collections.abc import Sequence
 from typing import Protocol
 
 from .catalog import HybridSearchHit, Product
@@ -10,13 +11,16 @@ from .database import (
     CatalogRepository,
     get_catalog,
 )
-
-
-FEATURE_HASH_MODEL = f"feature-hash-v1-{PRODUCT_EMBEDDING_DIMENSIONS}"
+from .config import get_settings
 
 
 class Vectorizer(Protocol):
+    @property
+    def model_id(self) -> str: ...
+
     def encode(self, text: str) -> list[float]: ...
+
+    def encode_many(self, texts: Sequence[str]) -> list[list[float]]: ...
 
 
 class FeatureHashVectorizer:
@@ -24,6 +28,10 @@ class FeatureHashVectorizer:
 
     def __init__(self, dimensions: int = PRODUCT_EMBEDDING_DIMENSIONS):
         self.dimensions = dimensions
+
+    @property
+    def model_id(self) -> str:
+        return f"feature-hash-v1-{self.dimensions}"
 
     def encode(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
@@ -36,6 +44,64 @@ class FeatureHashVectorizer:
             return vector
         return [value / norm for value in vector]
 
+    def encode_many(self, texts: Sequence[str]) -> list[list[float]]:
+        return [self.encode(text) for text in texts]
+
+
+class BGEVectorizer:
+    """Lazy Sentence Transformers adapter for the 1024-dimensional BGE-M3 model."""
+
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-m3",
+        *,
+        model_path: str = "",
+        device: str = "cpu",
+    ):
+        self.model_name = model_name
+        self.model_path = model_path
+        self.device = device
+        self._model = None
+
+    @property
+    def model_id(self) -> str:
+        return f"sentence-transformers:{self.model_name}"
+
+    def _load_model(self):
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:
+                raise RuntimeError(
+                    "BGE embeddings require the semantic optional dependency; "
+                    "install the project with `pip install -e .[semantic]`"
+                ) from exc
+            self._model = SentenceTransformer(
+                self.model_path or self.model_name,
+                device=self.device,
+            )
+            dimensions = self._model.get_sentence_embedding_dimension()
+            if dimensions != PRODUCT_EMBEDDING_DIMENSIONS:
+                raise ValueError(
+                    f"{self.model_name} produces {dimensions} dimensions; "
+                    f"expected {PRODUCT_EMBEDDING_DIMENSIONS}"
+                )
+        return self._model
+
+    def encode(self, text: str) -> list[float]:
+        return self.encode_many([text])[0]
+
+    def encode_many(self, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        vectors = self._load_model().encode(
+            list(texts),
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        return [vector.astype(float).tolist() for vector in vectors]
+
 
 class HybridRetriever:
     def __init__(
@@ -45,11 +111,15 @@ class HybridRetriever:
         *,
         rrf_k: int = 60,
         min_vector_score: float = 0.08,
+        strategy: str = "hybrid",
     ):
         self.repository = repository
         self.vectorizer = vectorizer or FeatureHashVectorizer()
         self.rrf_k = rrf_k
         self.min_vector_score = min_vector_score
+        if strategy not in {"adaptive", "hybrid"}:
+            raise ValueError("retrieval strategy must be adaptive or hybrid")
+        self.strategy = strategy
 
     def index_catalog(self) -> int:
         """Build the current vectorizer's product index in PostgreSQL."""
@@ -64,16 +134,20 @@ class HybridRetriever:
             product_id: hashlib.sha256(text.encode("utf-8")).hexdigest()
             for product_id, text in source_texts.items()
         }
-        embeddings = {}
+        pending_ids = []
         for product_id, text in source_texts.items():
-            expected = (FEATURE_HASH_MODEL, source_hashes[product_id])
+            expected = (self.vectorizer.model_id, source_hashes[product_id])
             if existing.get(product_id) != expected:
-                embeddings[product_id] = self.vectorizer.encode(text)
-        if not embeddings:
+                pending_ids.append(product_id)
+        if not pending_ids:
             return 0
+        vectors = self.vectorizer.encode_many(
+            [source_texts[product_id] for product_id in pending_ids]
+        )
+        embeddings = dict(zip(pending_ids, vectors, strict=True))
         return self.repository.save_product_embeddings(
             embeddings,
-            model=FEATURE_HASH_MODEL,
+            model=self.vectorizer.model_id,
             source_hashes=source_hashes,
         )
 
@@ -98,6 +172,16 @@ class HybridRetriever:
             hit.product.product_id: rank
             for rank, hit in enumerate(lexical_hits, start=1)
         }
+        if self.strategy == "adaptive" and lexical_hits:
+            return [
+                HybridSearchHit(
+                    product=hit.product,
+                    fused_score=1 / (self.rrf_k + rank),
+                    lexical_rank=rank,
+                    retrieval_sources=[self.repository.lexical_source],
+                )
+                for rank, hit in enumerate(lexical_hits[:limit], start=1)
+            ]
         query_vector = self.vectorizer.encode(query)
         if self.repository.dialect == "postgresql":
             vector_hits = self.repository.search_products_by_vector(
@@ -209,6 +293,19 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 @lru_cache
 def get_retriever() -> HybridRetriever:
-    retriever = HybridRetriever(get_catalog())
+    settings = get_settings()
+    if settings.embedding_provider.casefold() == "bge":
+        vectorizer: Vectorizer = BGEVectorizer(
+            settings.embedding_model,
+            model_path=settings.embedding_model_path,
+            device=settings.embedding_device,
+        )
+    else:
+        vectorizer = FeatureHashVectorizer()
+    retriever = HybridRetriever(
+        get_catalog(),
+        vectorizer,
+        strategy=settings.retrieval_strategy,
+    )
     retriever.index_catalog()
     return retriever

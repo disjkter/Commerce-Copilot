@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .query_understanding import QueryUnderstanding
+
 
 class AgentRole(StrEnum):
     PRODUCT_SCOUT = "product_scout"
@@ -114,6 +116,7 @@ class TurnTrace(BaseModel):
     planner_error: str | None = None
     composer_error: str | None = None
     applied_preferences: dict[str, Any] = Field(default_factory=dict)
+    query_understanding: QueryUnderstanding | None = None
     grounding: GroundingSummary
     stage_timings: list[StageTiming] = Field(default_factory=list)
 

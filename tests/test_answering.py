@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 
@@ -99,3 +100,39 @@ def test_changed_evidence_value_falls_back_locally():
     assert result.answer == "本地回答"
     assert result.source == "local_after_error"
     assert result.error == "GeneratedAnswerGroundingError"
+
+
+def test_composer_sends_response_focus_and_allows_one_grouped_citation():
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_payload = json.loads(request.content)
+        user_payload = json.loads(request_payload["messages"][1]["content"])
+        assert user_payload["response_focus"] == "advantages"
+        assert "只需在该段末尾引用一次" in request_payload["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"answer":"云雀 Lite 的轻量头戴设计适合日常通勤 [CP-AUD-101]。",'
+                            '"claims":[{"statement":"采用轻量头戴设计",'
+                            '"evidence_reference":"CP-AUD-101",'
+                            '"attribute":"description",'
+                            '"expected_value":"轻量头戴设计，适合日常通勤。"}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    report = make_report()
+    report.evidence[0].attributes["description"] = "轻量头戴设计，适合日常通勤。"
+    composer = DeepSeekAnswerComposer(
+        make_settings("test-key"),
+        httpx.MockTransport(handler),
+    )
+
+    result = asyncio.run(composer.create_answer("第一款有什么优势？", [report], "本地回答"))
+
+    assert result.source == "deepseek"
+    assert result.answer.count("[CP-AUD-101]") == 1

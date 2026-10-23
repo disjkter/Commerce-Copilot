@@ -9,6 +9,7 @@ from .comparison import compare_products
 from .contracts import AgentReport, AgentRole, Claim, Evidence, Mission
 from .database import get_catalog
 from .personalization import needs_product_clarification
+from .query_understanding import ResponseFocus, detect_response_focus
 from .retrieval import get_retriever
 
 
@@ -46,6 +47,12 @@ async def product_scout(mission: Mission) -> AgentDraft:
             else extract_budget_cents(mission.instruction)
         )
     selected_references = mission.parameters.get("selected_references")
+    response_focus = str(
+        mission.parameters.get(
+            "response_focus",
+            detect_response_focus(_current_turn_text(mission.instruction)).value,
+        )
+    )
     configured_categories = mission.parameters.get("categories")
     categories = (
         [str(item) for item in configured_categories]
@@ -129,18 +136,20 @@ async def product_scout(mission: Mission) -> AgentDraft:
     claims: list[Claim] = []
     for index, hit in enumerate(hits, start=1):
         product = hit.product
-        lines.append(
-            f"{index}. {product.title}｜{product.price_cents / 100:.2f} 元｜"
-            f"评分 {product.rating:.1f}｜库存 {product.stock}"
-        )
+        lines.append(_format_product_line(index, product, response_focus))
         evidence.append(
             Evidence(
                 source="local_catalog",
                 reference=product.product_id,
                 attributes={
                     "title": product.title,
+                    "category": product.category,
+                    "brand": product.brand,
+                    "description": product.description,
+                    "tags": product.tags,
                     "price_cents": product.price_cents,
                     "rating": product.rating,
+                    "review_count": product.review_count,
                     "stock": product.stock,
                     "retrieval_sources": hit.retrieval_sources,
                 },
@@ -148,9 +157,7 @@ async def product_scout(mission: Mission) -> AgentDraft:
         )
         claim_values = {
             "title": product.title,
-            "price_cents": product.price_cents,
-            "rating": product.rating,
-            "stock": product.stock,
+            **_focused_claim_values(product, response_focus),
         }
         claims.extend(
             Claim(
@@ -170,6 +177,43 @@ async def product_scout(mission: Mission) -> AgentDraft:
         evidence.append(comparison.evidence)
         claims.extend(comparison.claims)
     return "\n".join(lines), evidence, claims
+
+
+def _format_product_line(index: int, product: Product, focus: str) -> str:
+    if focus == ResponseFocus.ADVANTAGES.value:
+        return f"{index}. {product.title} 的主要特点：{product.description}"
+    if focus == ResponseFocus.PRICE.value:
+        return f"{index}. {product.title} 当前售价 {product.price_cents / 100:.2f} 元。"
+    if focus == ResponseFocus.RATING.value:
+        return (
+            f"{index}. {product.title} 评分 {product.rating:.1f}，"
+            f"共有 {product.review_count} 条评价。"
+        )
+    if focus == ResponseFocus.STOCK.value:
+        return f"{index}. {product.title} 当前库存 {product.stock} 件。"
+    return (
+        f"{index}. {product.title}｜{product.price_cents / 100:.2f} 元｜"
+        f"评分 {product.rating:.1f}｜库存 {product.stock}"
+    )
+
+
+def _focused_claim_values(product: Product, focus: str) -> dict[str, object]:
+    if focus == ResponseFocus.ADVANTAGES.value:
+        return {"description": product.description}
+    if focus == ResponseFocus.PRICE.value:
+        return {"price_cents": product.price_cents}
+    if focus == ResponseFocus.RATING.value:
+        return {
+            "rating": product.rating,
+            "review_count": product.review_count,
+        }
+    if focus == ResponseFocus.STOCK.value:
+        return {"stock": product.stock}
+    return {
+        "price_cents": product.price_cents,
+        "rating": product.rating,
+        "stock": product.stock,
+    }
 
 
 async def _find_budget_near_miss(
@@ -328,6 +372,9 @@ async def order_care(mission: Mission) -> AgentDraft:
 
 async def conversation_guide(mission: Mission) -> AgentDraft:
     await asyncio.sleep(0)
+    clarification = mission.parameters.get("clarification_question")
+    if isinstance(clarification, str) and clarification.strip():
+        return clarification.strip(), [], []
     return "你好，我可以协助挑选商品，也可以解释订单、物流和退换货问题。", [], []
 
 

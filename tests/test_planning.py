@@ -5,6 +5,15 @@ import httpx
 from commerce_copilot.config import Settings
 from commerce_copilot.contracts import AgentRole, ConversationTurn, Evidence
 from commerce_copilot.planning import DeepSeekPlanner, local_plan
+from commerce_copilot.query_understanding import ResponseFocus
+
+
+UNDERSTANDING_JSON = (
+    '"understanding":{"intents":["product"],"focus":"summary",'
+    '"constraints":{"max_price_cents":50000,"preferences":["通勤"],'
+    '"excluded_terms":[]},"referenced_products":[],"confidence":0.95,'
+    '"needs_clarification":false,"clarification_question":null},'
+)
 
 
 def make_settings(api_key: str) -> Settings:
@@ -82,6 +91,23 @@ def test_local_plan_resolves_second_product_from_ordered_evidence():
     assert plan.missions[0].parameters["selected_references"] == ["CP-AUD-101"]
 
 
+def test_local_understanding_recognizes_natural_focus_and_typo():
+    advantages = local_plan("第一款最值得买的地方是什么？", [
+        ConversationTurn(
+            user_message="推荐键盘",
+            assistant_answer="找到商品",
+            evidence=[Evidence(source="local_catalog", reference="CP-KEY-201")],
+        )
+    ])
+    stock = local_plan("这款还有库寸吗？", [
+        ConversationTurn(user_message="推荐耳机", assistant_answer="找到商品")
+    ])
+
+    assert advantages.understanding.focus == ResponseFocus.ADVANTAGES
+    assert advantages.missions[0].parameters["response_focus"] == "advantages"
+    assert stock.understanding.focus == ResponseFocus.STOCK
+
+
 def test_local_plan_accepts_previous_budget_near_miss_without_old_budget():
     history = [
         ConversationTurn(
@@ -114,7 +140,7 @@ def test_deepseek_json_plan_is_validated():
                 "choices": [
                     {
                         "message": {
-                            "content": '{"tasks":[{"role":"product_scout",'
+                            "content": '{' + UNDERSTANDING_JSON + '"tasks":[{"role":"product_scout",'
                             '"instruction":"寻找通勤耳机","product_query":"通勤 无线 耳机",'
                             '"max_price_yuan":500,"preferences":["通勤"],'
                             '"selected_product_references":["INVENTED-ID"]}]}'
@@ -140,7 +166,7 @@ def test_deepseek_plan_can_accept_grounded_near_miss():
                 "choices": [
                     {
                         "message": {
-                            "content": '{"tasks":[{"role":"product_scout",'
+                            "content": '{' + UNDERSTANDING_JSON + '"tasks":[{"role":"product_scout",'
                             '"instruction":"接受候补商品","product_query":"耳机",'
                             '"selected_product_references":["CP-AUD-101"],'
                             '"relax_budget":true}]}'
@@ -181,3 +207,31 @@ def test_invalid_model_output_falls_back_locally():
     assert plan.source == "local_after_error"
     assert plan.error == "JSONDecodeError"
     assert plan.missions[0].role == AgentRole.PRODUCT_SCOUT
+
+
+def test_low_confidence_model_plan_requests_clarification():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"understanding":{"intents":["product"],'
+                            '"focus":"summary","constraints":{},'
+                            '"referenced_products":[],"confidence":0.4,'
+                            '"needs_clarification":true,'
+                            '"clarification_question":"你想购买哪一类商品？"},'
+                            '"tasks":[{"role":"product_scout",'
+                            '"instruction":"推荐商品","product_query":"商品"}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    planner = DeepSeekPlanner(make_settings("test-key"), httpx.MockTransport(handler))
+    plan = asyncio.run(planner.create_plan("帮我选一个"))
+
+    assert plan.missions[0].role == AgentRole.CONVERSATION_GUIDE
+    assert plan.missions[0].parameters["clarification_question"] == "你想购买哪一类商品？"
