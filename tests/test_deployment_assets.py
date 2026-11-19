@@ -8,6 +8,7 @@ def test_container_runs_application_as_non_root_user():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "FROM python:3.12-slim-bookworm" in dockerfile
+    assert "https://mirrors.aliyun.com/pypi/simple/" in dockerfile
     assert "USER commerce" in dockerfile
     assert 'CMD ["commerce-copilot"]' in dockerfile
 
