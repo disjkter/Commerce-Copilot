@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, model_validator
 class QueryIntent(StrEnum):
     PRODUCT = "product"
     ORDER_CARE = "order_care"
+    LOGISTICS = "logistics"
+    AFTER_SALES = "after_sales"
     CONVERSATION = "conversation"
 
 
@@ -42,6 +44,13 @@ class QueryUnderstanding(BaseModel):
 
 FOCUS_TERMS: tuple[tuple[ResponseFocus, tuple[str, ...]], ...] = (
     (
+        ResponseFocus.COMPARISON,
+        ("对比", "比较", "区别", "差别", "哪个更", "哪一个更", "怎么选"),
+    ),
+    (ResponseFocus.PRICE, ("价格", "多少钱", "售价", "贵吗", "便宜", "价位")),
+    (ResponseFocus.RATING, ("评分", "评价", "口碑", "评论")),
+    (ResponseFocus.STOCK, ("库存", "库寸", "有货", "现货", "还有吗", "能下单")),
+    (
         ResponseFocus.ADVANTAGES,
         (
             "优势",
@@ -54,15 +63,13 @@ FOCUS_TERMS: tuple[tuple[ResponseFocus, tuple[str, ...]], ...] = (
             "好在哪",
             "值得买",
             "适合吗",
+            "是否适合",
+            "能不能",
+            "能否",
+            "支持",
+            "能调节",
             "怎么样",
         ),
-    ),
-    (ResponseFocus.PRICE, ("价格", "多少钱", "售价", "贵吗", "便宜", "价位")),
-    (ResponseFocus.RATING, ("评分", "评价", "口碑", "评论")),
-    (ResponseFocus.STOCK, ("库存", "库寸", "有货", "现货", "还有吗", "能下单")),
-    (
-        ResponseFocus.COMPARISON,
-        ("对比", "比较", "区别", "差别", "哪个更", "哪一个更", "怎么选"),
     ),
 )
 

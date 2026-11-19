@@ -1,11 +1,17 @@
 # Commerce Copilot
 
-> 基于 LangGraph、DeepSeek 和 PostgreSQL 构建的可观测多 Agent 电商助手。
+[![CI](https://github.com/disjkter/Commerce-Copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/disjkter/Commerce-Copilot/actions/workflows/ci.yml)
+
+> 基于 LangGraph、可替换 LLM Gateway 和 PostgreSQL 构建的可观测多 Agent 电商助手。
 
 Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是把所有逻辑塞进一次模型调用，而是让 Supervisor 拆分任务，领域 Agent 并发执行确定性工具，Grounding 校验事实后再生成最终回答。
 
+生产演示环境支持使用 `compose.yaml` 启动FastAPI、pgvector PostgreSQL与一次性Alembic迁移任务。数据库仅位于Compose内部网络，API只绑定宿主机`127.0.0.1:8010`，由宿主机Nginx对外提供HTTP/SSE服务；应用容器使用非root用户并移除Linux capabilities。部署前复制`.env.production.example`为`.env.production`并替换全部占位密钥，启动时使用`docker compose --env-file .env.production up -d --build`。
+
 ```text
 多意图拆分 · 并发 Agent · Hybrid Retrieval · RRF · Grounding
+
+项目包含一套版本化 Agent 自动评测系统：`evals/agent_cases.jsonl` 提供 132 条多难度案例，覆盖路由、意图、证据、Grounding、多轮、故障降级和无证据场景，并支持基线/候选版本回归对比。使用方式见 [Agent 自动化评测](docs/agent-evaluation.md)。
 多轮记忆 · 用户偏好 · PostgreSQL · Alembic · 可观测 Trace
 ```
 
@@ -28,11 +34,11 @@ Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是
 | LLM | DeepSeek 结构化任务规划、证据化回答、本地 Planner/Composer 降级 |
 | 检索 | PostgreSQL FTS/GIN、pgvector/HNSW、SQLite FTS5/BM25、RRF 融合、硬约束过滤、候补推荐 |
 | 可信回答 | Evidence、Claim、字段级 Grounding、失败关闭 |
-| 多轮能力 | conversation_id、商品序号指代、确定性对比、预算放宽确认 |
+| 多轮能力 | 原始会话审计、近期窗口、结构化长期记忆、跨轮实体与商品序号指代 |
 | 个性化 | 用户预算、品类、品牌、场景和关注点持久化，本轮条件优先 |
 | 数据层 | PostgreSQL、SQLAlchemy Repository、Alembic；测试支持临时 SQLite |
-| 安全 | PBKDF2 密码哈希、签名 Token、订单归属和会话隔离 |
-| 工程质量 | 97 个自动化测试、离线检索评测、Web Trace、真实 Git 迭代历史 |
+| 安全 | PBKDF2 密码哈希、签名 Token、订单归属、会话隔离、Webhook 验签和分级滑动窗口限流 |
+| 工程质量 | 160+ 个自动化测试、离线检索评测、Web Trace、Prometheus 指标、真实 Git 迭代历史 |
 
 ## 项目文档
 
@@ -40,11 +46,15 @@ Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是
 - [五分钟面试演示手册](docs/demo-guide.md)
 - [简历描述与高频面试题](docs/interview-guide.md)
 - [后续功能路线图](docs/roadmap.md)
+- [聚合指标与 PromQL](docs/metrics.md)
+- [Grafana Dashboard](ops/grafana/commerce-copilot-dashboard.json)
+- [API 限流与防刷](docs/rate-limiting.md)
+- [上下文压缩与分层记忆](docs/context-memory.md)
 - [产品需求与边界](docs/product-spec.md)
 
 ## 当前状态与后续规划
 
-当前版本已经形成可运行、可测试的完整闭环，并具备 SSE 实时执行轨迹、`trace_id`、结构化 JSON 日志和分层性能评测。下一阶段将依次补充聚合指标、BGE + pgvector、Redis 缓存与限流、容器化部署和外部压力测试。规划功能与已实现能力严格分开，详细验收标准见 [roadmap](docs/roadmap.md)。
+当前版本已经形成可运行、可测试的完整闭环，并具备 SSE 实时执行轨迹、`trace_id`、结构化 JSON 日志、Prometheus 聚合指标和分层性能评测。下一阶段将依次补充 BGE + pgvector、Redis 缓存与限流、容器化部署和外部压力测试。规划功能与已实现能力严格分开，详细验收标准见 [roadmap](docs/roadmap.md)。
 
 ## 架构
 
@@ -105,7 +115,7 @@ py -3.12 -m venv .venv
 
 更多演示场景见 [五分钟演示手册](docs/demo-guide.md)。
 
-如需启用 DeepSeek，将 `.env.example` 复制为 `.env`，只在 `.env` 中填写新生成的 `LLM_API_KEY`。没有配置 Key、请求超时或模型输出校验失败时，Supervisor 会自动使用本地规划器，并在响应的 `trace.planning_source` 中标记降级状态。
+如需启用模型，将 `.env.example` 复制为 `.env`，填写 `LLM_API_KEY`、`LLM_BASE_URL` 和 `LLM_MODEL`。OpenAI Chat Completions 兼容服务只需更换配置；`PLANNER_MODEL` 与 `COMPOSER_MODEL` 可分别覆盖默认模型。模型不支持原生 `response_format` 时可设置 `LLM_STRUCTURED_OUTPUT=false`，Gateway 仍会提取 JSON 并通过 Pydantic 校验。没有配置 Key、请求超时或模型输出校验失败时，Supervisor 会自动使用本地规划器，并在响应的 `trace.planning_source` 中标记降级状态。
 
 首次本地运行可使用演示账号 `demo / demo12345` 查询演示订单。部署到共享环境前必须在 `.env` 中设置足够长且随机的 `AUTH_SECRET`，并删除或禁用演示账号。
 
@@ -113,6 +123,13 @@ py -3.12 -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
+```
+
+仓库提供 GitHub Actions 质量门禁。推送到 `main` 或创建 Pull Request 时，会自动执行凭据泄漏扫描、Python 编译检查、Alembic 单迁移头检查和完整 pytest 回归，并保留 JUnit 测试报告。对应配置见 [CI workflow](.github/workflows/ci.yml)。本地可以提前执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_repository_secrets.py
+.\.venv\Scripts\python.exe scripts\check_migration_heads.py
 ```
 
 运行离线检索评测：
@@ -153,6 +170,16 @@ py -3.12 -m venv .venv
 
 应用日志使用单行 JSON 输出，包含 `timestamp`、`level`、`logger`、`event`、`trace_id` 和事件相关字段。一次请求中的工作流、Agent、Grounding、回答生成及 Repository 操作共享同一个 `trace_id`；日志只记录消息长度，不记录密码、Token 或完整用户输入。可通过 `.env` 中的 `LOG_LEVEL` 调整日志等级。
 
+`GET /metrics` 暴露 Prometheus 兼容的聚合指标，覆盖端到端请求、Agent、Tool、LLM、Grounding 和业务结果。延迟使用 Histogram，可在 Prometheus 中计算 P50/P95/P99；LLM 降级、Tool 重试、Grounding 拦截、无结果和人工审核使用 Counter。指标标签只包含角色、工具、模型和状态等有限枚举，不包含 `user_id`、`conversation_id` 或 `trace_id`，防止高基数和用户信息泄露。本地查看：
+
+```powershell
+(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8010/metrics).Content
+```
+
+当前 Registry 是单进程内存实现，适合本地演示和单 Worker 部署；生产多 Worker 部署时应由 Prometheus 分别抓取实例，或替换成支持 multiprocess 的指标客户端。
+
+所有领域 Worker 通过统一 Agent Runtime Harness 执行。Harness 负责注入用户、会话、角色权限和确认上下文，统一管理超时取消、分支故障隔离、Evidence/Claim 交付、`AgentReport` 与 Tool Trace。订单、物流及退货写操作接入应用层 Tool Sandbox：工具通过 Registry 声明 Pydantic 输入模型、允许角色、Capability Scope、风险等级、超时和重试策略；只读工具允许有限重试，高风险写工具必须显式确认且禁止盲目重试。每次调用记录参数哈希、策略判定、耗时、重试次数和错误类型，同时进入 AgentReport、网页运行轨迹和结构化日志。Agent 不直接获得数据库访问权，为后续切换 HTTP 或 MCP Adapter 保留稳定边界。
+
 ## 项目原则
 
 1. 事实必须来自工具或数据源，不由模型凭空补充。
@@ -182,7 +209,7 @@ Product Scout 的第一阶段检索流程为：
 
 ## 证据化回答生成
 
-通过 Grounding 的 Agent 报告会交给 DeepSeek 组织自然语言。模型必须同时返回回答和结构化 Claims，每条事实都要标注 Evidence 引用；代码会重新校验引用、字段和值。未知引用、字段缺失、值被修改、接口超时或 JSON 不合法时，系统自动返回确定性的本地答案。响应中的 `trace.answer_source` 和 `trace.composer_error` 用于观察生成来源与降级原因。
+通过 Grounding 的 Agent 报告会交给配置的 Composer 模型组织自然语言。模型必须同时返回回答和结构化 Claims，每条事实都要标注 Evidence 引用；代码会重新校验引用、字段和值。未知引用、字段缺失、值被修改、接口超时或 JSON 不合法时，系统自动返回确定性的本地答案。响应中的 `trace.answer_source`、`trace.answer_llm` 和 `trace.composer_error` 用于观察生成来源、实际 Provider/Model、Token 使用量与降级原因。
 
 ## 多轮会话
 
@@ -252,5 +279,7 @@ PostgreSQL 向量检索使用 pgvector。Windows 首次安装 pgvector 二进制
 
 ## 订单与售后
 
-Order Care Agent 能从用户消息中提取演示订单号，查询订单状态与商品明细，并按意图补充退货或发货政策。没有订单号时只提供通用政策并要求用户补充编号；不存在的订单不会生成虚构状态。演示编号为 `ORD-2026-1001` 和 `ORD-2026-1002`。
+Order Care Agent 能从用户消息中提取演示订单号，查询订单状态与商品明细，并按意图补充退货或发货政策。独立的 After-sales Advisor 会校验订单归属，并根据可信签收时间、商品可退属性和退货窗口执行确定性资格判断，返回“符合 / 不符合 / 需人工复核”及结构化 Evidence；资格结论仍需通过 Grounding 后才能进入最终回答。退货申请采用“资格判断 → 用户明确确认 → 创建待审核工单”的两阶段事务流程，数据库幂等键保证重复确认不会创建多张工单。不符合资格、身份不匹配或未明确确认时均不会写入业务数据。工单状态由代码白名单控制，用户只能在二次确认后将 `pending_review` 转为 `cancelled`；创建和取消都会写入不可省略的状态审计事件，查询操作不改变业务状态。没有订单号时会要求用户补充编号，不存在或不属于当前账号的订单不会生成虚构状态。可使用 `ORD-2026-1001` 验证未签收分支、`ORD-2026-1002` 验证退货期已过分支、`ORD-2026-1003` 验证退货期内及工单创建分支。
+
+退货预审使用独立的版本化规则引擎，而不是依赖 Prompt 或用户单方面描述。规则按 Grounding、资格、材料完整性、序列号与多源证据冲突、高金额硬阈值、风险评分的顺序执行，输出决策、风险等级、命中规则、缺失材料和 `rule_version`。在图片、包装、配件等实物证据尚未接入时，系统只允许创建待审核工单，不会自动授权寄回或退款；完整低风险证据通过后才具备自动授权寄回的条件，最终退款仍需仓库质检。
 

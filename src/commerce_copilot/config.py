@@ -18,6 +18,10 @@ class Settings:
     llm_api_key: str
     llm_base_url: str
     llm_model: str
+    llm_provider: str = "openai_compatible"
+    planner_model: str = ""
+    composer_model: str = ""
+    llm_structured_output: bool = True
     auth_secret: str = "local-development-secret-change-before-deploying"
     access_token_minutes: int = 120
     database_url: str = ""
@@ -27,6 +31,21 @@ class Settings:
     embedding_model_path: str = ""
     embedding_device: str = "cpu"
     retrieval_strategy: str = "adaptive"
+    logistics_webhook_secret: str = (
+        "local-logistics-webhook-secret-change-before-deploying"
+    )
+    rate_limit_enabled: bool = True
+    trust_proxy_headers: bool = False
+    login_rate_limit: int = 20
+    login_rate_window_seconds: int = 60
+    register_rate_limit: int = 10
+    register_rate_window_seconds: int = 300
+    turn_rate_limit: int = 60
+    turn_rate_window_seconds: int = 60
+    webhook_rate_limit: int = 300
+    webhook_rate_window_seconds: int = 60
+    context_compaction_enabled: bool = True
+    context_recent_turns: int = 4
 
 
 @lru_cache
@@ -39,6 +58,11 @@ def get_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
         llm_model=os.getenv("LLM_MODEL", "deepseek-flash"),
+        llm_provider=os.getenv("LLM_PROVIDER", "openai_compatible"),
+        planner_model=os.getenv("PLANNER_MODEL", ""),
+        composer_model=os.getenv("COMPOSER_MODEL", ""),
+        llm_structured_output=os.getenv("LLM_STRUCTURED_OUTPUT", "true").casefold()
+        in {"1", "true", "yes", "on"},
         auth_secret=os.getenv(
             "AUTH_SECRET",
             "local-development-secret-change-before-deploying",
@@ -51,5 +75,32 @@ def get_settings() -> Settings:
         embedding_model_path=os.getenv("EMBEDDING_MODEL_PATH", ""),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
         retrieval_strategy=os.getenv("RETRIEVAL_STRATEGY", "adaptive").casefold(),
+        logistics_webhook_secret=os.getenv(
+            "LOGISTICS_WEBHOOK_SECRET",
+            "local-logistics-webhook-secret-change-before-deploying",
+        ),
+        rate_limit_enabled=os.getenv("RATE_LIMIT_ENABLED", "true").casefold()
+        in {"1", "true", "yes", "on"},
+        trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "false").casefold()
+        in {"1", "true", "yes", "on"},
+        login_rate_limit=int(os.getenv("LOGIN_RATE_LIMIT", "20")),
+        login_rate_window_seconds=int(
+            os.getenv("LOGIN_RATE_WINDOW_SECONDS", "60")
+        ),
+        register_rate_limit=int(os.getenv("REGISTER_RATE_LIMIT", "10")),
+        register_rate_window_seconds=int(
+            os.getenv("REGISTER_RATE_WINDOW_SECONDS", "300")
+        ),
+        turn_rate_limit=int(os.getenv("TURN_RATE_LIMIT", "60")),
+        turn_rate_window_seconds=int(os.getenv("TURN_RATE_WINDOW_SECONDS", "60")),
+        webhook_rate_limit=int(os.getenv("WEBHOOK_RATE_LIMIT", "300")),
+        webhook_rate_window_seconds=int(
+            os.getenv("WEBHOOK_RATE_WINDOW_SECONDS", "60")
+        ),
+        context_compaction_enabled=os.getenv(
+            "CONTEXT_COMPACTION_ENABLED", "true"
+        ).casefold()
+        in {"1", "true", "yes", "on"},
+        context_recent_turns=max(1, min(20, int(os.getenv("CONTEXT_RECENT_TURNS", "4")))),
     )
 

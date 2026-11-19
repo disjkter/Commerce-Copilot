@@ -105,6 +105,18 @@ DEFAULT_WORKFLOW_SCENARIOS = (
         expected_message_contains="已发货",
     ),
     WorkflowScenario(
+        name="logistics_tracking",
+        message="订单 ORD-2026-1001 的包裹到哪了",
+        expected_roles=(AgentRole.LOGISTICS_TRACKER,),
+        expected_message_contains="运输中",
+    ),
+    WorkflowScenario(
+        name="return_eligibility",
+        message="订单 ORD-2026-1003 还能退吗？",
+        expected_roles=(AgentRole.AFTER_SALES_ADVISOR,),
+        expected_message_contains="符合退货资格",
+    ),
+    WorkflowScenario(
         name="multi_agent",
         message="推荐一款500元以内的通勤耳机，同时查询订单 ORD-2026-1001 的状态",
         expected_roles=(AgentRole.PRODUCT_SCOUT, AgentRole.ORDER_CARE),

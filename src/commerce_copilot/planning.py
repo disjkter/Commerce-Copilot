@@ -6,9 +6,11 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from .budget import extract_budget_cents
+from .catalog import Product
 from .config import Settings, get_settings
-from .contracts import AgentRole, ConversationTurn, Evidence, Mission
-from .llm_json import parse_json_object
+from .contracts import AgentRole, ConversationTurn, Evidence, LLMCallTrace, Mission
+from .entity_resolution import resolve_product_mentions
+from .llm_gateway import LLMClient, OpenAICompatibleClient
 from .query_understanding import (
     QueryConstraints,
     QueryIntent,
@@ -19,7 +21,69 @@ from .query_understanding import (
 
 
 PRODUCT_TERMS = ("推荐", "商品", "价格", "预算", "耳机", "电脑", "手机", "键盘", "鼠标", "买")
-CARE_TERMS = ("订单", "物流", "发货", "退款", "退货", "换货", "售后")
+CARE_TERMS = (
+    "退款",
+    "退货",
+    "换货",
+    "售后",
+    "取消订单",
+    "订单状态",
+    "下单时间",
+    "买了什么",
+    "订单明细",
+    "发货规则",
+    "发货政策",
+)
+LOGISTICS_TERMS = (
+    "物流",
+    "快递",
+    "包裹",
+    "运单",
+    "到哪",
+    "送到",
+    "送达",
+    "配送",
+    "派送",
+    "揽收",
+    "签收",
+    "物流异常",
+    "物流不动",
+    "没更新",
+)
+LOGISTICS_FOLLOW_UP_TERMS = ("什么时候到", "到哪了", "有更新吗", "多久送到")
+AFTER_SALES_ELIGIBILITY_TERMS = (
+    "能退",
+    "可以退",
+    "还能退",
+    "能不能退",
+    "是否能退",
+    "退货资格",
+    "申请退货",
+    "我要退货",
+    "办理退货",
+    "提交退货",
+    "确认退货",
+    "退货进度",
+    "售后进度",
+    "退货申请状态",
+    "工单状态",
+    "取消退货申请",
+    "撤销退货申请",
+    "取消售后",
+    "过了退货期",
+    "退货期限",
+)
+TRACKING_NUMBER_PATTERN = re.compile(r"\b[A-Z]{2,4}\d{8,20}\b", re.IGNORECASE)
+ORDER_ID_PATTERN = re.compile(r"\bORD-\d{4}-\d{4}\b", re.IGNORECASE)
+RETURN_REQUEST_PATTERN = re.compile(r"\bRET-[A-F0-9]{12}\b", re.IGNORECASE)
+ACCOUNT_ORDER_TERMS = (
+    "我的订单",
+    "我的包裹",
+    "我买的",
+    "购买记录",
+    "最近订单",
+    "全部订单",
+)
 REFERENCE_TERMS = ("它", "这个", "那个", "这款", "那款", "第一款", "第二款", "第三款", "刚才", "上一个", "继续")
 RELAXATION_ACCEPTANCE_TERMS = ("可以", "接受", "提高预算", "放宽预算")
 PRODUCT_FOLLOW_UP_TERMS = (
@@ -35,9 +99,10 @@ PRODUCT_FOLLOW_UP_TERMS = (
 
 class Plan(BaseModel):
     missions: list[Mission] = Field(min_length=1)
-    source: Literal["deepseek", "local", "local_after_error"]
+    source: Literal["llm", "local", "local_after_error"]
     understanding: QueryUnderstanding
     error: str | None = None
+    llm_trace: LLMCallTrace | None = None
 
 
 class ModelTask(BaseModel):
@@ -56,8 +121,10 @@ class ModelPlan(BaseModel):
 
 
 SYSTEM_PROMPT = """你是电商助手的任务规划器。请把用户消息拆成可并行执行的任务。
-只能使用以下 role：product_scout、order_care、conversation_guide。
-product_scout 处理选购、商品、价格和比较；order_care 处理订单、物流、退款和退换货；
+只能使用以下 role：product_scout、order_care、logistics_tracker、after_sales_advisor、conversation_guide。
+product_scout 处理选购、商品、价格和比较；order_care 处理订单详情、退款、退换货和售后政策；
+logistics_tracker 处理包裹轨迹、当前位置、预计送达和物流异常；
+after_sales_advisor 根据订单、签收时间和商品规则判断退货资格；
 conversation_guide 只处理问候或能力咨询。同一个 role 最多出现一次。
 预算统一输出为人民币元。不要虚构用户没有表达的约束。
 输入可能包含 conversation_history 和 current_message。仅在当前消息存在指代或追问时使用历史，
@@ -76,24 +143,35 @@ confidence 表示当前消息结合历史后能否被可靠执行。缺少执行
 """
 
 
-class DeepSeekPlanner:
-    def __init__(self, settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None):
+class LLMPlanner:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        client: LLMClient | None = None,
+    ):
         self.settings = settings or get_settings()
         self.transport = transport
+        self.client = client or OpenAICompatibleClient(self.settings, transport)
 
     async def create_plan(
         self,
         message: str,
         history: list[ConversationTurn] | None = None,
+        catalog_products: list[Product] | None = None,
     ) -> Plan:
         recent_history = history or []
-        local_decision = local_plan(message, recent_history)
+        local_decision = local_plan(
+            message,
+            recent_history,
+            catalog_products=catalog_products,
+        )
         if not self.settings.llm_api_key:
             return local_decision
         if self.transport is None and _can_use_local_fast_path(local_decision):
             return local_decision
         try:
-            model_plan = await self._request_model(message, recent_history)
+            model_plan, call_trace = await self._request_model(message, recent_history)
             allowed_product_references = {
                 item.reference
                 for turn in recent_history
@@ -123,8 +201,9 @@ class DeepSeekPlanner:
                 ]
             return Plan(
                 missions=missions,
-                source="deepseek",
+                source="llm",
                 understanding=model_plan.understanding,
+                llm_trace=call_trace,
             )
         except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
             return local_decision.model_copy(
@@ -135,11 +214,10 @@ class DeepSeekPlanner:
         self,
         message: str,
         history: list[ConversationTurn],
-    ) -> ModelPlan:
-        endpoint = f"{self.settings.llm_base_url.rstrip('/')}/chat/completions"
-        payload = {
-            "model": self.settings.llm_model,
-            "messages": [
+    ) -> tuple[ModelPlan, LLMCallTrace]:
+        model = self.settings.planner_model or self.settings.llm_model
+        response = await self.client.generate_json(
+            [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
@@ -154,29 +232,36 @@ class DeepSeekPlanner:
                     ),
                 },
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0,
-            "max_tokens": 600,
-        }
-        timeout = httpx.Timeout(12.0, connect=5.0)
-        async with httpx.AsyncClient(transport=self.transport, timeout=timeout) as client:
-            response = await client.post(
-                endpoint,
-                headers={"Authorization": f"Bearer {self.settings.llm_api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return ModelPlan.model_validate(parse_json_object(content))
+            model=model,
+            temperature=0,
+            max_tokens=600,
+            timeout_seconds=12,
+        )
+        return (
+            ModelPlan.model_validate(response.data),
+            LLMCallTrace(
+                provider=response.provider,
+                model=response.model,
+                elapsed_ms=response.elapsed_ms,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+            ),
+        )
+
+
+# Backwards-compatible import for existing integrations; new code should use LLMPlanner.
+DeepSeekPlanner = LLMPlanner
 
 
 def local_plan(
     message: str,
     history: list[ConversationTurn] | None = None,
+    *,
+    catalog_products: list[Product] | None = None,
 ) -> Plan:
     normalized = message.strip()
     recent_history = history or []
-    previous = recent_history[-1].user_message if recent_history else ""
+    previous = _select_context_message(normalized, recent_history)
     positions = _ordinal_positions(normalized)
     required_product_count = max(positions, default=1)
     previous_products = _previous_product_evidence(
@@ -188,6 +273,10 @@ def local_plan(
         for position in positions
         if position <= len(previous_products)
     ]
+    mentioned_products = resolve_product_mentions(normalized, catalog_products or [])
+    selected_references = _unique(
+        [*selected_references, *(product.product_id for product in mentioned_products)]
+    )
     invalid_positions = [
         position for position in positions if position > len(previous_products)
     ]
@@ -197,22 +286,55 @@ def local_plan(
     if accepts_relaxation and not selected_references:
         selected_references = [previous_products[0].reference]
     has_reference = bool(previous) and any(
-        term in normalized for term in REFERENCE_TERMS + PRODUCT_FOLLOW_UP_TERMS
+        term in normalized
+        for term in (
+            REFERENCE_TERMS
+            + PRODUCT_FOLLOW_UP_TERMS
+            + LOGISTICS_FOLLOW_UP_TERMS
+        )
     )
     contextual_text = f"{previous}\n当前追问：{normalized}" if has_reference else normalized
-    product_intent = bool(positions and previous_products) or any(
+    product_intent = bool(mentioned_products) or bool(positions and previous_products) or any(
         term in normalized for term in PRODUCT_TERMS
     )
+    if any(term in normalized for term in ACCOUNT_ORDER_TERMS) and not any(
+        term in normalized for term in ("推荐", "再买", "相似商品")
+    ):
+        product_intent = False
     product_intent = product_intent or (
         has_reference
         and any(term in previous for term in PRODUCT_TERMS)
         and any(term in normalized for term in REFERENCE_TERMS + PRODUCT_FOLLOW_UP_TERMS)
     )
+    logistics_intent = any(term in normalized for term in LOGISTICS_TERMS) or bool(
+        TRACKING_NUMBER_PATTERN.search(normalized)
+    )
+    logistics_intent = logistics_intent or (
+        has_reference
+        and any(term in previous for term in LOGISTICS_TERMS)
+        and any(
+            term in normalized
+            for term in REFERENCE_TERMS + LOGISTICS_FOLLOW_UP_TERMS
+        )
+    )
+    after_sales_intent = any(
+        term in normalized for term in AFTER_SALES_ELIGIBILITY_TERMS
+    ) or bool(RETURN_REQUEST_PATTERN.search(normalized))
     care_intent = any(term in normalized for term in CARE_TERMS)
     care_intent = care_intent or (
+        ("订单" in normalized or any(term in normalized for term in ACCOUNT_ORDER_TERMS))
+        and not logistics_intent
+    )
+    # Eligibility is a deterministic business decision handled by the dedicated
+    # after-sales agent. Avoid also dispatching the policy/order agent merely
+    # because the same sentence contains the word "退货".
+    if after_sales_intent:
+        care_intent = False
+    care_intent = care_intent or (
         has_reference
-        and any(term in previous for term in CARE_TERMS)
+        and ("订单" in previous or any(term in previous for term in CARE_TERMS))
         and any(term in normalized for term in REFERENCE_TERMS)
+        and not logistics_intent
     )
     focus = detect_response_focus(normalized)
     intents: list[QueryIntent] = []
@@ -220,6 +342,10 @@ def local_plan(
         intents.append(QueryIntent.PRODUCT)
     if care_intent:
         intents.append(QueryIntent.ORDER_CARE)
+    if logistics_intent:
+        intents.append(QueryIntent.LOGISTICS)
+    if after_sales_intent:
+        intents.append(QueryIntent.AFTER_SALES)
     if not intents:
         intents.append(QueryIntent.CONVERSATION)
     local_budget = extract_budget_cents(normalized)
@@ -228,7 +354,11 @@ def local_plan(
         focus=focus,
         constraints=QueryConstraints(max_price_cents=local_budget),
         referenced_products=selected_references,
-        confidence=0.9 if product_intent or care_intent else 0.75,
+        confidence=(
+            0.9
+            if product_intent or care_intent or logistics_intent or after_sales_intent
+            else 0.75
+        ),
     )
     missions: list[Mission] = []
     if product_intent:
@@ -257,6 +387,14 @@ def local_plan(
         )
     if care_intent:
         missions.append(Mission(role=AgentRole.ORDER_CARE, instruction=contextual_text))
+    if logistics_intent:
+        missions.append(
+            Mission(role=AgentRole.LOGISTICS_TRACKER, instruction=contextual_text)
+        )
+    if after_sales_intent:
+        missions.append(
+            Mission(role=AgentRole.AFTER_SALES_ADVISOR, instruction=contextual_text)
+        )
     if not missions:
         missions.append(Mission(role=AgentRole.CONVERSATION_GUIDE, instruction=normalized))
     return Plan(missions=missions, source="local", understanding=understanding)
@@ -296,6 +434,10 @@ def _deduplicate(tasks: list[ModelTask]) -> list[ModelTask]:
     return list(by_role.values())
 
 
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
 def _requires_clarification(understanding: QueryUnderstanding) -> bool:
     if understanding.needs_clarification:
         return True
@@ -319,6 +461,35 @@ def _can_use_local_fast_path(plan: Plan) -> bool:
 def _ordinal_positions(text: str) -> list[int]:
     number_map = {"一": 1, "二": 2, "三": 3, "1": 1, "2": 2, "3": 3}
     return [number_map[value] for value in re.findall(r"第\s*([一二三123])\s*款", text)]
+
+
+def _select_context_message(
+    message: str,
+    history: list[ConversationTurn],
+) -> str:
+    if not history:
+        return ""
+    needs_context = bool(_ordinal_positions(message)) or any(
+        term in message
+        for term in REFERENCE_TERMS + PRODUCT_FOLLOW_UP_TERMS + LOGISTICS_FOLLOW_UP_TERMS
+    )
+    if not needs_context:
+        return history[-1].user_message
+    for turn in reversed(history):
+        if turn.evidence:
+            return turn.user_message
+        if turn.user_message.startswith("历史会话摘要："):
+            return turn.user_message
+        if ORDER_ID_PATTERN.search(turn.user_message) or TRACKING_NUMBER_PATTERN.search(
+            turn.user_message
+        ):
+            return turn.user_message
+        if any(
+            term in turn.user_message
+            for term in PRODUCT_TERMS + CARE_TERMS + LOGISTICS_TERMS
+        ):
+            return turn.user_message
+    return history[-1].user_message
 
 
 def _previous_product_evidence(

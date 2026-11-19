@@ -3,6 +3,8 @@ import json
 from uuid import uuid4
 
 from commerce_copilot.api import app
+from commerce_copilot.config import get_settings
+from commerce_copilot.logistics import create_webhook_signature
 
 
 client = TestClient(app)
@@ -31,8 +33,10 @@ def test_frontend_is_served_with_assets():
     assert 'id="preferences-dialog"' in page.text
     assert 'id="preferences-button"' in page.text
     assert "savePreferences" in script.text
-    assert "/assets/app.js?v=20261021-4" in page.text
+    assert "/assets/app.js?v=20261117-1" in page.text
     assert 'id="trace-id"' in page.text
+    assert 'id="memory-section"' in page.text
+    assert "renderMemory" in script.text
     assert "/v1/turns/stream" in script.text
 
 
@@ -40,6 +44,63 @@ def test_health_endpoint():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_prometheus_metrics_endpoint():
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "# TYPE commerce_turns_total counter" in response.text
+    assert "# TYPE commerce_turn_duration_seconds histogram" in response.text
+
+
+def test_logistics_webhook_rejects_an_invalid_signature():
+    response = client.post(
+        "/v1/webhooks/logistics/SF",
+        content=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-Logistics-Signature": "sha256=invalid",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_logistics_webhook_is_authenticated_and_idempotent():
+    event_id = f"unknown-{uuid4().hex}"
+    body = json.dumps(
+        {
+            "provider_event_id": event_id,
+            "tracking_number": "SF999999999999",
+            "status": "in_transit",
+            "location": "测试转运中心",
+            "description": "测试物流事件",
+            "occurred_at": "2026-11-15T10:00:00+08:00",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Logistics-Signature": create_webhook_signature(
+            body,
+            get_settings().logistics_webhook_secret,
+        ),
+    }
+
+    first = client.post("/v1/webhooks/logistics/SF", content=body, headers=headers)
+    duplicate = client.post(
+        "/v1/webhooks/logistics/SF",
+        content=body,
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert first.json()["result"] == "shipment_not_found"
+    assert duplicate.status_code == 200
+    assert duplicate.json()["result"] == "duplicate"
 
 
 def test_turn_endpoint_exposes_agent_trace():
@@ -56,12 +117,12 @@ def test_turn_endpoint_exposes_agent_trace():
 
     assert response.status_code == 200
     assert body["conversation_id"] == conversation_id
-    assert body["reports"][0]["role"] == "order_care"
+    assert body["reports"][0]["role"] == "after_sales_advisor"
     assert body["elapsed_ms"] >= 0
     assert body["trace"]["planning_source"] == "local"
     assert body["trace"]["answer_source"] == "local"
-    assert body["trace"]["selected_agents"] == ["order_care"]
-    assert body["trace"]["query_understanding"]["intents"] == ["order_care"]
+    assert body["trace"]["selected_agents"] == ["after_sales_advisor"]
+    assert body["trace"]["query_understanding"]["intents"] == ["after_sales"]
     assert body["trace"]["grounding"]["passed"] is True
     assert len(body["trace"]["trace_id"]) == 32
     assert {item["stage"] for item in body["trace"]["stage_timings"]} >= {

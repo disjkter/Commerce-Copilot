@@ -409,6 +409,8 @@ textarea::placeholder { color: #909a95; }
 .agent-reports { margin-top: 12px; display: grid; gap: 8px; }
 
 .agent-card { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fbfcfb; }
+.tool-call { margin: 8px 0; padding: 7px 9px; border-left: 3px solid var(--accent); background: #f2f7f4; font-family: var(--mono); font-size: 11px; }
+.tool-call.tool-failed { border-left-color: #b42318; background: #fff3f1; color: #8a1c13; }
 .agent-summary { width: 100%; padding: 12px; display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 9px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .agent-summary:hover { background: #f2f6f3; }
 .agent-symbol { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; background: var(--forest); color: white; font: 800 9px/1 ui-monospace, monospace; }

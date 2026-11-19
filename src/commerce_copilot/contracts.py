@@ -9,6 +9,8 @@ from .query_understanding import QueryUnderstanding
 class AgentRole(StrEnum):
     PRODUCT_SCOUT = "product_scout"
     ORDER_CARE = "order_care"
+    LOGISTICS_TRACKER = "logistics_tracker"
+    AFTER_SALES_ADVISOR = "after_sales_advisor"
     CONVERSATION_GUIDE = "conversation_guide"
 
 
@@ -31,11 +33,25 @@ class Claim(BaseModel):
     expected_value: Any
 
 
+class ToolCallTrace(BaseModel):
+    call_id: str
+    tool_name: str
+    display_name: str = ""
+    risk_level: str
+    arguments_hash: str
+    elapsed_ms: float = Field(ge=0)
+    success: bool
+    retry_count: int = Field(ge=0)
+    error_type: str | None = None
+    policy_decision: Literal["allowed", "denied"] = "allowed"
+
+
 class AgentReport(BaseModel):
     role: AgentRole
     message: str
     evidence: list[Evidence] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
+    tool_calls: list[ToolCallTrace] = Field(default_factory=list)
     elapsed_ms: float = Field(ge=0)
     status: str = "completed"
 
@@ -44,6 +60,22 @@ class ConversationTurn(BaseModel):
     user_message: str
     assistant_answer: str
     evidence: list[Evidence] = Field(default_factory=list)
+
+
+class ConversationMemory(BaseModel):
+    summary: str = ""
+    entities: dict[str, list[str]] = Field(default_factory=dict)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    evidence: list[Evidence] = Field(default_factory=list)
+    compacted_through_turn_id: int = Field(default=0, ge=0)
+    source_turn_count: int = Field(default=0, ge=0)
+
+    def as_context_turn(self) -> ConversationTurn:
+        return ConversationTurn(
+            user_message=f"历史会话摘要：{self.summary}",
+            assistant_answer="以上是较早会话的结构化压缩记忆。",
+            evidence=self.evidence,
+        )
 
 
 class UserRecord(BaseModel):
@@ -108,16 +140,34 @@ class StageTiming(BaseModel):
     agent_role: AgentRole | None = None
 
 
+class LLMCallTrace(BaseModel):
+    provider: str
+    model: str
+    elapsed_ms: float = Field(ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+
+
+class MemoryTrace(BaseModel):
+    summary_loaded: bool = False
+    recent_turns: int = Field(default=0, ge=0)
+    compacted_turns: int = Field(default=0, ge=0)
+    source_turns: int = Field(default=0, ge=0)
+
+
 class TurnTrace(BaseModel):
     trace_id: str = ""
-    planning_source: Literal["deepseek", "local", "local_after_error"]
-    answer_source: Literal["deepseek", "local", "local_after_error"]
+    planning_source: Literal["llm", "local", "local_after_error"]
+    answer_source: Literal["llm", "local", "local_after_error"]
+    planner_llm: LLMCallTrace | None = None
+    answer_llm: LLMCallTrace | None = None
     selected_agents: list[AgentRole]
     planner_error: str | None = None
     composer_error: str | None = None
     applied_preferences: dict[str, Any] = Field(default_factory=dict)
     query_understanding: QueryUnderstanding | None = None
     grounding: GroundingSummary
+    memory: MemoryTrace = Field(default_factory=MemoryTrace)
     stage_timings: list[StageTiming] = Field(default_factory=list)
 
 

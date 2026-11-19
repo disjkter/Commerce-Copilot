@@ -2,6 +2,7 @@ import asyncio
 from uuid import uuid4
 
 from commerce_copilot.contracts import AgentRole
+from commerce_copilot.database import get_catalog
 from commerce_copilot.orchestrator import handle_turn
 
 
@@ -37,7 +38,8 @@ def test_mixed_request_fans_out_to_two_agents():
     }
     assert "商品发现任务" in result.answer
     assert "发货与物流规则" in result.answer
-    assert "请提供" in result.answer
+    assert "ORD-2026-1001" in result.answer
+    assert "ORD-2026-1002" in result.answer
 
 
 def test_budget_without_yuan_unit_filters_product_results():
@@ -160,6 +162,66 @@ def test_product_advantage_follow_up_uses_descriptive_evidence():
     assert "热插拔静音轴" in result.answer
     assert "库存" not in result.answer
     assert result.trace.grounding.passed is True
+
+
+def test_follow_up_uses_compacted_memory_beyond_recent_window():
+    conversation_id = f"memory-{uuid4().hex}"
+    asyncio.run(
+        handle_turn(
+            "查询订单 ORD-2026-1001",
+            conversation_id,
+            local_only=True,
+        )
+    )
+    for index in range(5):
+        asyncio.run(
+            handle_turn(
+                f"你好 {index}",
+                conversation_id,
+                local_only=True,
+            )
+        )
+
+    result = asyncio.run(
+        handle_turn(
+            "它现在是什么状态？",
+            conversation_id,
+            local_only=True,
+        )
+    )
+
+    assert [report.role for report in result.reports] == [AgentRole.ORDER_CARE]
+    assert "ORD-2026-1001" in result.answer
+    assert result.trace.memory.summary_loaded is True
+    assert result.trace.memory.source_turns >= 2
+    assert any(
+        timing.stage == "memory_compaction"
+        for timing in result.trace.stage_timings
+    )
+
+
+def test_memory_compaction_failure_does_not_fail_the_answer(monkeypatch):
+    repository = get_catalog()
+
+    def fail_compaction(*args, **kwargs):
+        raise RuntimeError("memory backend unavailable")
+
+    monkeypatch.setattr(repository, "compact_conversation_memory", fail_compaction)
+
+    result = asyncio.run(
+        handle_turn(
+            "你好",
+            f"memory-failure-{uuid4().hex}",
+            local_only=True,
+        )
+    )
+
+    assert result.answer
+    assert result.reports[0].status == "completed"
+    assert any(
+        timing.stage == "memory_compaction"
+        for timing in result.trace.stage_timings
+    )
 
 
 def test_unknown_request_uses_conversation_guide():

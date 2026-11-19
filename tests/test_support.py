@@ -46,11 +46,32 @@ def test_return_policy_can_be_queried(tmp_path):
 def test_order_agent_returns_grounded_order_and_policy():
     result = asyncio.run(handle_turn("订单 ORD-2026-1001 到哪了，收到后能退货吗？"))
 
-    assert result.reports[0].role == AgentRole.ORDER_CARE
-    assert "已发货" in result.answer
-    assert "七日退货规则" in result.answer
+    assert {report.role for report in result.reports} == {
+        AgentRole.LOGISTICS_TRACKER,
+        AgentRole.AFTER_SALES_ADVISOR,
+    }
+    assert "暂不符合退货资格" in result.answer
+    assert "上海转运中心" in result.answer
     assert result.trace.grounding.passed is True
-    assert result.trace.grounding.checked_claims == 3
+    assert result.trace.grounding.checked_claims >= 5
+
+
+def test_after_sales_agent_returns_grounded_eligibility_decision():
+    result = asyncio.run(
+        handle_turn(
+            "订单 ORD-2026-1003 还能退吗？",
+            user_id="user-demo",
+            local_only=True,
+        )
+    )
+
+    assert [report.role for report in result.reports] == [
+        AgentRole.AFTER_SALES_ADVISOR
+    ]
+    assert "符合退货资格" in result.answer
+    assert "退货截止时间" in result.answer
+    assert result.reports[0].evidence[0].source == "derived_return_eligibility"
+    assert result.trace.grounding.passed is True
 
 
 def test_order_agent_requests_id_when_missing():
@@ -59,6 +80,54 @@ def test_order_agent_requests_id_when_missing():
     assert "请提供" in result.answer
     assert "ORD-2026-1001" in result.answer
     assert result.trace.grounding.passed is True
+
+
+def test_order_agent_lists_orders_for_the_authenticated_user():
+    result = asyncio.run(handle_turn("查看我的订单", user_id="user-demo"))
+
+    assert [report.role for report in result.reports] == [AgentRole.ORDER_CARE]
+    assert "ORD-2026-1001" in result.answer
+    assert "ORD-2026-1002" in result.answer
+    assert "ORD-2026-1003" in result.answer
+    assert "请提供" not in result.answer
+    assert result.trace.grounding.passed is True
+
+
+def test_logistics_agent_lists_the_authenticated_users_shipments():
+    result = asyncio.run(handle_turn("查看我的订单物流", user_id="user-demo"))
+
+    assert [report.role for report in result.reports] == [
+        AgentRole.LOGISTICS_TRACKER
+    ]
+    assert "ORD-2026-1001" in result.answer
+    assert "ORD-2026-1002" in result.answer
+    assert "ORD-2026-1003" in result.answer
+    assert len(result.reports[0].evidence) == 3
+    assert result.trace.grounding.passed is True
+
+
+def test_logistics_agent_returns_grounded_tracking_timeline():
+    result = asyncio.run(handle_turn("订单 ORD-2026-1001 的包裹到哪了？"))
+
+    assert [report.role for report in result.reports] == [
+        AgentRole.LOGISTICS_TRACKER
+    ]
+    assert "运输中" in result.answer
+    assert "上海转运中心" in result.answer
+    evidence = result.reports[0].evidence[0]
+    assert evidence.source == "logistics_repository"
+    assert evidence.reference == "shipment:SHP-2026-1001"
+    assert result.trace.grounding.passed is True
+
+
+def test_logistics_agent_requests_order_or_tracking_number():
+    result = asyncio.run(handle_turn("帮我看看快递到哪里了"))
+
+    assert [report.role for report in result.reports] == [
+        AgentRole.LOGISTICS_TRACKER
+    ]
+    assert "订单号或运单号" in result.answer
+    assert result.reports[0].evidence == []
 
 
 def test_status_follow_up_returns_only_requested_order_field():

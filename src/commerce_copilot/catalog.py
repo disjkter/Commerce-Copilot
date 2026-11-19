@@ -12,6 +12,8 @@ class Product(BaseModel):
     review_count: int = Field(ge=0)
     stock: int = Field(ge=0)
     tags: list[str] = Field(default_factory=list)
+    returnable: bool = True
+    return_window_days: int = Field(default=7, gt=0, le=365)
 
 
 class ProductSearchHit(BaseModel):

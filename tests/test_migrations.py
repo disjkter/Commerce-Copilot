@@ -15,7 +15,13 @@ EXPECTED_TABLES = {
     "users",
     "order_owners",
     "conversation_owners",
+    "conversation_memories",
     "user_preferences",
+    "shipments",
+    "shipment_events",
+    "logistics_webhook_events",
+    "return_requests",
+    "return_request_events",
 }
 
 

@@ -4,8 +4,9 @@ import httpx
 
 from commerce_copilot.config import Settings
 from commerce_copilot.contracts import AgentRole, ConversationTurn, Evidence
+from commerce_copilot.database import DEMO_PRODUCTS
 from commerce_copilot.planning import DeepSeekPlanner, local_plan
-from commerce_copilot.query_understanding import ResponseFocus
+from commerce_copilot.query_understanding import QueryIntent, ResponseFocus
 
 
 UNDERSTANDING_JSON = (
@@ -33,7 +34,7 @@ def test_local_plan_extracts_parallel_tasks_and_budget():
 
     assert [mission.role for mission in plan.missions] == [
         AgentRole.PRODUCT_SCOUT,
-        AgentRole.ORDER_CARE,
+        AgentRole.LOGISTICS_TRACKER,
     ]
     assert plan.missions[0].parameters["max_price_cents"] == 50000
 
@@ -42,6 +43,108 @@ def test_local_plan_understands_budget_without_currency_unit():
     plan = local_plan("我要一款500以下的耳机，顺便帮我看看订单物流")
 
     assert plan.missions[0].parameters["max_price_cents"] == 50000
+
+
+def test_local_plan_routes_tracking_to_logistics_agent():
+    plan = local_plan("订单 ORD-2026-1001 的包裹到哪了？")
+
+    assert [mission.role for mission in plan.missions] == [
+        AgentRole.LOGISTICS_TRACKER
+    ]
+    assert plan.understanding.intents == [QueryIntent.LOGISTICS]
+
+
+def test_local_plan_recognizes_a_tracking_number_without_keywords():
+    plan = local_plan("帮我查一下 SF202610150001")
+
+    assert [mission.role for mission in plan.missions] == [
+        AgentRole.LOGISTICS_TRACKER
+    ]
+
+
+def test_local_plan_splits_logistics_and_return_policy():
+    plan = local_plan("订单 ORD-2026-1001 到哪了，收到后能退货吗？")
+
+    assert [mission.role for mission in plan.missions] == [
+        AgentRole.LOGISTICS_TRACKER,
+        AgentRole.AFTER_SALES_ADVISOR,
+    ]
+
+
+def test_local_plan_routes_return_eligibility_to_after_sales_agent():
+    plan = local_plan("订单 ORD-2026-1003 还能退吗？")
+
+    assert [mission.role for mission in plan.missions] == [
+        AgentRole.AFTER_SALES_ADVISOR
+    ]
+    assert plan.understanding.intents == [QueryIntent.AFTER_SALES]
+
+
+def test_local_plan_keeps_generic_return_policy_in_order_care():
+    plan = local_plan("查询退货政策")
+
+    assert [mission.role for mission in plan.missions] == [AgentRole.ORDER_CARE]
+
+
+def test_local_plan_routes_return_work_order_id_to_after_sales_agent():
+    plan = local_plan("查询工单 RET-05ADC65D7C17 的状态")
+
+    assert [mission.role for mission in plan.missions] == [
+        AgentRole.AFTER_SALES_ADVISOR
+    ]
+    assert plan.understanding.intents == [QueryIntent.AFTER_SALES]
+
+
+def test_local_plan_routes_account_order_and_shipment_lists():
+    orders = local_plan("查看我的订单")
+    shipments = local_plan("查看我的订单物流")
+
+    assert [mission.role for mission in orders.missions] == [AgentRole.ORDER_CARE]
+    assert [mission.role for mission in shipments.missions] == [
+        AgentRole.LOGISTICS_TRACKER
+    ]
+
+
+def test_local_plan_resolves_explicit_catalog_product_without_generic_term():
+    plan = local_plan(
+        "潮汐 Buds 2 的评分怎么样？",
+        catalog_products=list(DEMO_PRODUCTS),
+    )
+
+    assert plan.missions[0].role == AgentRole.PRODUCT_SCOUT
+    assert plan.missions[0].parameters["selected_references"] == ["CP-AUD-102"]
+    assert plan.understanding.referenced_products == ["CP-AUD-102"]
+    assert plan.understanding.focus == ResponseFocus.RATING
+
+
+def test_local_plan_resolves_multiple_catalog_products_in_mention_order():
+    plan = local_plan(
+        "对比跃点 M3和方糖75",
+        catalog_products=list(DEMO_PRODUCTS),
+    )
+
+    assert plan.missions[0].parameters["selected_references"] == [
+        "CP-MOU-301",
+        "CP-KEY-201",
+    ]
+    assert plan.understanding.focus == ResponseFocus.COMPARISON
+
+
+def test_specific_product_capability_questions_use_advantages_focus():
+    messages = (
+        "云雀 Lite 是否适合通勤和在线会议？",
+        "潮汐 Buds 2 能不能听见周围环境声音？",
+        "方糖 75 支持哪些连接方式？",
+        "跃点 M3 能调节 DPI 吗？",
+    )
+
+    assert {
+        local_plan(
+            message,
+            catalog_products=list(DEMO_PRODUCTS),
+        ).understanding.focus
+        for message in messages
+    } == {ResponseFocus.ADVANTAGES}
 
 
 def test_local_plan_resolves_order_reference_from_history():
@@ -153,7 +256,10 @@ def test_deepseek_json_plan_is_validated():
     planner = DeepSeekPlanner(make_settings("test-key"), httpx.MockTransport(handler))
     plan = asyncio.run(planner.create_plan("推荐通勤耳机"))
 
-    assert plan.source == "deepseek"
+    assert plan.source == "llm"
+    assert plan.llm_trace is not None
+    assert plan.llm_trace.provider == "openai_compatible"
+    assert plan.llm_trace.model == "deepseek-flash"
     assert plan.missions[0].parameters["max_price_cents"] == 50000
     assert "selected_references" not in plan.missions[0].parameters
 

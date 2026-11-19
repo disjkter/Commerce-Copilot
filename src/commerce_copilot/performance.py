@@ -135,6 +135,24 @@ DEFAULT_SCENARIOS = (
         expected_message_contains="没有查询到订单",
     ),
     BenchmarkScenario(
+        name="logistics_tracking_owned",
+        mission=Mission(
+            role=AgentRole.LOGISTICS_TRACKER,
+            instruction="查询订单 ORD-2026-1001 的物流进度",
+            parameters={"user_id": "user-demo"},
+        ),
+        expected_message_contains="运输中",
+    ),
+    BenchmarkScenario(
+        name="return_eligibility_owned",
+        mission=Mission(
+            role=AgentRole.AFTER_SALES_ADVISOR,
+            instruction="订单 ORD-2026-1003 还能退吗？",
+            parameters={"user_id": "user-demo"},
+        ),
+        expected_message_contains="符合退货资格",
+    ),
+    BenchmarkScenario(
         name="greeting",
         mission=Mission(
             role=AgentRole.CONVERSATION_GUIDE,

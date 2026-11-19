@@ -1,12 +1,16 @@
 import asyncio
+import hashlib
+import ipaddress
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from pydantic import ValidationError
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
@@ -18,15 +22,71 @@ from .auth import (
     PublicUser,
     UsernameTakenError,
 )
-from .config import get_settings
+from .config import Settings, get_settings
 from .contracts import TurnRequest, TurnResponse, UserPreferences
 from .database import get_catalog
+from .logistics import verify_webhook_signature
+from .metrics import record_rate_limit, render_metrics
+from .observability import log_event
 from .orchestrator import handle_turn
+from .rate_limit import InMemorySlidingWindowRateLimiter, RateLimiter
 from .security import InvalidTokenError, decode_access_token
+from .support import LogisticsWebhookResponse, TrackingWebhookPayload
 
 
 WEB_ROOT = Path(__file__).with_name("web")
 BEARER = HTTPBearer(auto_error=False)
+LOGGER = logging.getLogger("commerce_copilot.api")
+
+
+def _client_identity(request: Request, settings: Settings) -> str:
+    direct = request.client.host if request.client is not None else "unknown"
+    if not settings.trust_proxy_headers:
+        return direct
+    forwarded = request.headers.get("X-Forwarded-For", "").split(",", maxsplit=1)[0].strip()
+    try:
+        return str(ipaddress.ip_address(forwarded))
+    except ValueError:
+        return direct
+
+
+def _enforce_rate_limit(
+    limiter: RateLimiter,
+    *,
+    enabled: bool,
+    scope: str,
+    identity: str,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    if not enabled:
+        return
+    identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    decision = limiter.check(
+        f"{scope}:{identity_hash}",
+        limit=limit,
+        window_seconds=window_seconds,
+    )
+    try:
+        record_rate_limit(scope, decision.allowed)
+    except Exception as metrics_error:
+        log_event(
+            LOGGER,
+            "metrics_recording_failed",
+            level=logging.WARNING,
+            error_type=type(metrics_error).__name__,
+            metric_scope="rate_limit",
+        )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many requests; please retry later",
+            headers={
+                "Retry-After": str(decision.retry_after_seconds),
+                "X-RateLimit-Limit": str(decision.limit),
+                "X-RateLimit-Remaining": "0",
+            },
+        )
 
 
 def require_user(
@@ -59,6 +119,7 @@ def require_user(
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version="0.1.0")
+    app.state.rate_limiter = InMemorySlidingWindowRateLimiter()
     app.mount("/assets", StaticFiles(directory=WEB_ROOT), name="assets")
 
     @app.get("/", include_in_schema=False)
@@ -72,15 +133,82 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Response:
+        return Response(
+            content=render_metrics(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
+    @app.post(
+        "/v1/webhooks/logistics/{provider}",
+        response_model=LogisticsWebhookResponse,
+    )
+    async def receive_logistics_webhook(
+        provider: str,
+        request: Request,
+    ) -> LogisticsWebhookResponse:
+        normalized_provider = provider.strip().upper()
+        if not normalized_provider or len(normalized_provider) > 64:
+            raise HTTPException(status_code=400, detail="invalid logistics provider")
+        _enforce_rate_limit(
+            app.state.rate_limiter,
+            enabled=settings.rate_limit_enabled,
+            scope="logistics_webhook",
+            identity=f"{normalized_provider}:{_client_identity(request, settings)}",
+            limit=settings.webhook_rate_limit,
+            window_seconds=settings.webhook_rate_window_seconds,
+        )
+        raw_body = await request.body()
+        if not verify_webhook_signature(
+            raw_body,
+            request.headers.get("X-Logistics-Signature"),
+            settings.logistics_webhook_secret,
+        ):
+            raise HTTPException(status_code=401, detail="invalid webhook signature")
+        try:
+            event = TrackingWebhookPayload.model_validate_json(raw_body)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=exc.errors(include_url=False),
+            ) from exc
+        result = await asyncio.to_thread(
+            get_catalog().ingest_tracking_event,
+            normalized_provider,
+            event,
+        )
+        return LogisticsWebhookResponse(
+            provider=normalized_provider,
+            provider_event_id=event.provider_event_id,
+            result=result,
+        )
+
     @app.post("/v1/auth/register", response_model=AuthResponse, status_code=201)
-    async def register(credentials: Credentials) -> AuthResponse:
+    async def register(request: Request, credentials: Credentials) -> AuthResponse:
+        _enforce_rate_limit(
+            app.state.rate_limiter,
+            enabled=settings.rate_limit_enabled,
+            scope="register",
+            identity=_client_identity(request, settings),
+            limit=settings.register_rate_limit,
+            window_seconds=settings.register_rate_window_seconds,
+        )
         try:
             return await asyncio.to_thread(AuthService().register, credentials)
         except UsernameTakenError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/v1/auth/login", response_model=AuthResponse)
-    async def login(credentials: Credentials) -> AuthResponse:
+    async def login(request: Request, credentials: Credentials) -> AuthResponse:
+        _enforce_rate_limit(
+            app.state.rate_limiter,
+            enabled=settings.rate_limit_enabled,
+            scope="login",
+            identity=_client_identity(request, settings),
+            limit=settings.login_rate_limit,
+            window_seconds=settings.login_rate_window_seconds,
+        )
         try:
             return await asyncio.to_thread(AuthService().login, credentials)
         except InvalidCredentialsError as exc:
@@ -88,13 +216,22 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/turns", response_model=TurnResponse)
     async def create_turn(
-        request: TurnRequest,
+        request: Request,
+        turn: TurnRequest,
         user: Annotated[PublicUser, Depends(require_user)],
     ) -> TurnResponse:
+        _enforce_rate_limit(
+            app.state.rate_limiter,
+            enabled=settings.rate_limit_enabled,
+            scope="turn",
+            identity=user.user_id,
+            limit=settings.turn_rate_limit,
+            window_seconds=settings.turn_rate_window_seconds,
+        )
         try:
             return await handle_turn(
-                request.message,
-                request.conversation_id,
+                turn.message,
+                turn.conversation_id,
                 user_id=user.user_id,
             )
         except PermissionError as exc:
@@ -102,9 +239,18 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/turns/stream")
     async def stream_turn(
-        request: TurnRequest,
+        request: Request,
+        turn: TurnRequest,
         user: Annotated[PublicUser, Depends(require_user)],
     ) -> StreamingResponse:
+        _enforce_rate_limit(
+            app.state.rate_limiter,
+            enabled=settings.rate_limit_enabled,
+            scope="turn",
+            identity=user.user_id,
+            limit=settings.turn_rate_limit,
+            window_seconds=settings.turn_rate_window_seconds,
+        )
         async def event_stream() -> AsyncIterator[str]:
             queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
 
@@ -114,8 +260,8 @@ def create_app() -> FastAPI:
             async def run_workflow() -> None:
                 try:
                     response = await handle_turn(
-                        request.message,
-                        request.conversation_id,
+                        turn.message,
+                        turn.conversation_id,
                         user_id=user.user_id,
                         event_sink=publish,
                     )

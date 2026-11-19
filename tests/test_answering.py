@@ -5,7 +5,7 @@ import httpx
 
 from commerce_copilot.answering import DeepSeekAnswerComposer
 from commerce_copilot.config import Settings
-from commerce_copilot.contracts import AgentReport, AgentRole, Evidence
+from commerce_copilot.contracts import AgentReport, AgentRole, Claim, Evidence
 
 
 def make_settings(api_key: str) -> Settings:
@@ -69,8 +69,11 @@ def test_grounded_model_answer_is_accepted():
     )
     result = asyncio.run(composer.create_answer("推荐耳机", [make_report()], "本地回答"))
 
-    assert result.source == "deepseek"
-    assert "[CP-AUD-101]" in result.answer
+    assert result.source == "llm"
+    assert result.llm_trace is not None
+    assert result.llm_trace.provider == "openai_compatible"
+    assert result.answer == "云雀 Lite 售价 329 元。"
+    assert "CP-AUD-101" not in result.answer
 
 
 def test_changed_evidence_value_falls_back_locally():
@@ -98,6 +101,70 @@ def test_changed_evidence_value_falls_back_locally():
     result = asyncio.run(composer.create_answer("推荐耳机", [make_report()], "本地回答"))
 
     assert result.answer == "本地回答"
+    assert result.source == "local_after_error"
+    assert result.error == "GeneratedAnswerGroundingError"
+
+
+def test_missing_required_claim_falls_back_to_complete_local_answer():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"answer":"七日退货规则 [policy:returns]。",'
+                            '"claims":[{"statement":"支持七日退货",'
+                            '"evidence_reference":"policy:returns",'
+                            '"attribute":"title",'
+                            '"expected_value":"七日退货规则"}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    report = AgentReport(
+        role=AgentRole.ORDER_CARE,
+        message="订单已发货；支持七日退货。",
+        evidence=[
+            Evidence(
+                source="local_orders",
+                reference="ORD-2026-1001",
+                attributes={"status_label": "已发货"},
+            ),
+            Evidence(
+                source="service_policy",
+                reference="policy:returns",
+                attributes={"title": "七日退货规则"},
+            ),
+        ],
+        claims=[
+            Claim(
+                statement="订单状态为已发货",
+                evidence_reference="ORD-2026-1001",
+                attribute="status_label",
+                expected_value="已发货",
+            ),
+            Claim(
+                statement="七日退货规则",
+                evidence_reference="policy:returns",
+                attribute="title",
+                expected_value="七日退货规则",
+            ),
+        ],
+        elapsed_ms=1,
+    )
+    composer = DeepSeekAnswerComposer(
+        make_settings("test-key"),
+        httpx.MockTransport(handler),
+    )
+
+    result = asyncio.run(
+        composer.create_answer("查询状态和退货政策", [report], "完整本地回答")
+    )
+
+    assert result.answer == "完整本地回答"
     assert result.source == "local_after_error"
     assert result.error == "GeneratedAnswerGroundingError"
 
@@ -134,5 +201,5 @@ def test_composer_sends_response_focus_and_allows_one_grouped_citation():
 
     result = asyncio.run(composer.create_answer("第一款有什么优势？", [report], "本地回答"))
 
-    assert result.source == "deepseek"
-    assert result.answer.count("[CP-AUD-101]") == 1
+    assert result.source == "llm"
+    assert result.answer == "云雀 Lite 的轻量头戴设计适合日常通勤。"

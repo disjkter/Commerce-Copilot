@@ -14,6 +14,7 @@
 - Claim–Evidence Grounding 与失败关闭
 - 用户鉴权、订单归属、会话隔离和偏好持久化
 - 多轮商品指代、确定性商品对比和执行 Trace
+- 原始历史、近期窗口与结构化摘要组成的分层会话记忆
 - Agent 执行层与完整编排链路的场景化阶梯压测
 - 自动化测试及离线检索评测
 
@@ -24,7 +25,7 @@
 - [x] 使用 SSE 输出 `planning_started`、`agent_completed`、`grounding_completed`、`answer_completed`
 - [x] 为每次请求生成 `trace_id`，贯穿 API、编排、Agent、Repository 和最终响应
 - [x] 输出结构化 JSON 日志，记录阶段耗时、Agent 状态、数据访问和降级原因
-- [ ] 增加基础指标：P50/P95 延迟、LLM 降级率、Grounding 失败率、无结果率
+- [x] 暴露 Prometheus 聚合指标：延迟分位数、LLM 降级率、Grounding 失败率、无结果率及 Tool 重试率
 
 验收标准：网页可以逐步展示执行进度；一次异常能够通过 `trace_id` 还原完整链路。
 
@@ -48,7 +49,7 @@
 
 - [ ] Redis 缓存热门商品、政策和短期会话数据
 - [ ] 设计缓存 Key、TTL、失效和防穿透策略
-- [ ] 基于用户和 IP 的接口限流
+- [x] 基于用户、IP 和业务 Scope 的可替换滑动窗口限流（单进程后端）
 - [ ] 将 Embedding 构建、评测等耗时任务放入后台任务队列
 - [ ] 验证缓存命中率及数据库压力变化
 
@@ -59,7 +60,7 @@
 目标：形成可公开演示、可回滚、可持续验证的完整工程交付。
 
 - [ ] Docker Compose 编排 API、PostgreSQL、Redis
-- [ ] GitHub Actions 执行测试、迁移检查和静态检查
+- [x] GitHub Actions 执行语法检查、迁移拓扑检查、凭据扫描和自动化测试
 - [ ] 云端部署、健康检查和环境变量管理
 - [ ] k6 或 Locust 压力测试报告
 - [ ] bad case 数据集与回归评测

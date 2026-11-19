@@ -5,9 +5,12 @@ __pycache__/
 .coverage
 htmlcov/
 .env
+.env.production
 dist/
 build/
 *.egg-info/
 runtime/
 artifacts/
+.eval-runtime/
+.test-runtime/
 

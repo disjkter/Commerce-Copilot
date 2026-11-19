@@ -132,6 +132,58 @@ def test_conversation_turn_preserves_ordered_evidence(tmp_path):
     assert [item.reference for item in turn.evidence] == ["CP-AUD-102", "CP-AUD-101"]
 
 
+def test_conversation_memory_compacts_old_turns_and_keeps_recent_window(tmp_path):
+    repository = CatalogRepository(tmp_path / "memory.db")
+    owner = repository.create_user("memory-owner", hash_password("password-123"))
+    conversation_id = "memory-session"
+    assert repository.ensure_conversation_owner(conversation_id, owner.user_id)
+    product = Evidence(
+        source="local_catalog",
+        reference="CP-AUD-101",
+        attributes={"title": "云雀 Lite 通勤蓝牙耳机"},
+    )
+    repository.add_conversation_turn(
+        conversation_id,
+        "预算500元，推荐耳机",
+        "找到商品",
+        [product],
+    )
+    repository.add_conversation_turn(
+        conversation_id,
+        "查询订单 ORD-2026-1001",
+        "订单已发货",
+    )
+    for index in range(4):
+        repository.add_conversation_turn(
+            conversation_id,
+            f"普通问题 {index}",
+            f"普通回答 {index}",
+        )
+
+    memory = repository.compact_conversation_memory(conversation_id, recent_limit=2)
+    history, loaded_memory, recent_count = repository.get_conversation_context(
+        conversation_id,
+        recent_limit=2,
+    )
+
+    assert memory is not None
+    assert memory.source_turn_count == 4
+    assert memory.entities["order_ids"] == ["ORD-2026-1001"]
+    assert memory.constraints["max_price_cents"] == 50000
+    assert [item.reference for item in memory.evidence] == ["CP-AUD-101"]
+    assert loaded_memory == memory
+    assert recent_count == 2
+    assert len(history) == 3
+    assert history[0].user_message.startswith("历史会话摘要：")
+
+    unchanged = repository.compact_conversation_memory(
+        conversation_id,
+        recent_limit=2,
+    )
+    assert unchanged is not None
+    assert unchanged.source_turn_count == 4
+
+
 def test_order_lookup_enforces_user_ownership(tmp_path):
     repository = CatalogRepository(tmp_path / "catalog.db")
     repository.seed_products()
@@ -142,6 +194,11 @@ def test_order_lookup_enforces_user_ownership(tmp_path):
 
     assert repository.get_order("ORD-2026-1001", user_id=owner.user_id) is not None
     assert repository.get_order("ORD-2026-1001", user_id=other.user_id) is None
+
+    assert [
+        order.order_id for order in repository.list_user_orders(owner.user_id)
+    ] == ["ORD-2026-1001"]
+    assert repository.list_user_orders(other.user_id) == []
 
 
 def test_delete_conversation_requires_owner_and_removes_history(tmp_path):

@@ -38,6 +38,8 @@ updateAuthState();
 const roleMeta = {
   product_scout: { name: "Product Scout", symbol: "PS" },
   order_care: { name: "Order Care", symbol: "OC" },
+  logistics_tracker: { name: "Logistics Tracker", symbol: "LT" },
+  after_sales_advisor: { name: "After-sales Advisor", symbol: "AS" },
   conversation_guide: { name: "Conversation Guide", symbol: "CG" },
 };
 
@@ -221,7 +223,8 @@ function handleStreamEvent(event, data) {
   if (event === "planning_completed") {
     plannedAgentCount = data.agents.length;
     setText("metric-agents", plannedAgentCount);
-    setPill("planning-source", `${data.source} · ${formatNumber(data.elapsed_ms)} ms`, true);
+    const label = data.model ? `${data.model} · ${formatNumber(data.elapsed_ms)} ms` : `${data.source} · ${formatNumber(data.elapsed_ms)} ms`;
+    setPill("planning-source", label, true);
     setPill("agent-status", `0/${plannedAgentCount} RUNNING`);
   }
   if (event === "agent_started") setPill("agent-status", `${liveAgentCount}/${plannedAgentCount} RUNNING`);
@@ -242,7 +245,8 @@ function handleStreamEvent(event, data) {
     );
   }
   if (event === "answer_completed") {
-    setPill("answer-source", `${data.source} · ${formatNumber(data.elapsed_ms)} ms`, true);
+    const label = data.model ? `${data.model} · ${formatNumber(data.elapsed_ms)} ms` : `${data.source} · ${formatNumber(data.elapsed_ms)} ms`;
+    setPill("answer-source", label, true);
   }
   if (event === "workflow_completed") {
     setText("metric-time", `${formatNumber(data.elapsed_ms)} ms`);
@@ -282,15 +286,16 @@ function renderTrace(body) {
   const planningTiming = findStageTiming(body.trace, "planning");
   const groundingTiming = findStageTiming(body.trace, "grounding");
   const answeringTiming = findStageTiming(body.trace, "answering");
-  setPill("planning-source", formatStage(body.trace.planning_source, planningTiming));
+  setPill("planning-source", formatModelStage(body.trace.planning_source, body.trace.planner_llm, planningTiming));
   setPill("agent-status", `${body.reports.filter((item) => item.status === "completed").length}/${body.reports.length} OK`);
   setPill("grounding-status", formatStage(body.trace.grounding.passed ? "PASSED" : "BLOCKED", groundingTiming), body.trace.grounding.passed);
-  setPill("answer-source", formatStage(body.trace.answer_source, answeringTiming));
+  setPill("answer-source", formatModelStage(body.trace.answer_source, body.trace.answer_llm, answeringTiming));
   setText("agent-count-label", `${body.reports.length} REPORT${body.reports.length === 1 ? "" : "S"}`);
 
   const reportContainer = document.querySelector("#agent-reports");
   reportContainer.replaceChildren(...body.reports.map(createAgentCard));
   renderPersonalization(body.trace.applied_preferences || {});
+  renderMemory(body.trace.memory || {});
   renderErrors(body);
 }
 
@@ -300,6 +305,11 @@ function findStageTiming(trace, stage) {
 
 function formatStage(label, timing) {
   return timing ? `${label} · ${formatNumber(timing.elapsed_ms)} ms` : label;
+}
+
+function formatModelStage(source, llmTrace, timing) {
+  const label = llmTrace ? `${llmTrace.provider}/${llmTrace.model}` : source;
+  return formatStage(label, timing);
 }
 
 function renderPersonalization(preferences) {
@@ -315,6 +325,32 @@ function renderPersonalization(preferences) {
   }));
 }
 
+function renderMemory(memory) {
+  const section = document.querySelector("#memory-section");
+  const values = document.querySelector("#memory-values");
+  const sourceTurns = Number(memory.source_turns || 0);
+  const compactedTurns = Number(memory.compacted_turns || 0);
+  const recentTurns = Number(memory.recent_turns || 0);
+  const visible = Boolean(memory.summary_loaded) || sourceTurns > 0 || compactedTurns > 0;
+  section.classList.toggle("hidden", !visible);
+  if (!visible) {
+    values.replaceChildren();
+    return;
+  }
+  const labels = [
+    `长期摘要：${memory.summary_loaded ? "已加载" : "本轮新建"}`,
+    `近期原文：${recentTurns} 轮`,
+    `累计压缩：${sourceTurns} 轮`,
+  ];
+  if (compactedTurns > 0) labels.push(`本轮新增：${compactedTurns} 轮`);
+  values.replaceChildren(...labels.map((label) => {
+    const chip = document.createElement("span");
+    chip.className = "preference-chip";
+    chip.textContent = label;
+    return chip;
+  }));
+}
+
 function createAgentCard(report) {
   const meta = roleMeta[report.role] || { name: report.role, symbol: "AG" };
   const card = document.createElement("article");
@@ -326,7 +362,7 @@ function createAgentCard(report) {
   summary.setAttribute("aria-expanded", "true");
   summary.innerHTML = `
     <span class="agent-symbol">${meta.symbol}</span>
-    <span class="agent-name"><strong>${escapeHtml(meta.name)}</strong><small>${escapeHtml(report.status.toUpperCase())} · ${report.evidence.length} evidence</small></span>
+    <span class="agent-name"><strong>${escapeHtml(meta.name)}</strong><small>${escapeHtml(report.status.toUpperCase())} · ${report.evidence.length} evidence · ${(report.tool_calls || []).length} tools</small></span>
     <span class="agent-time">${formatNumber(report.elapsed_ms)} ms</span>
   `;
 
@@ -335,6 +371,7 @@ function createAgentCard(report) {
   const message = document.createElement("p");
   message.textContent = report.message;
   details.append(message);
+  (report.tool_calls || []).forEach((item) => details.append(createToolCall(item)));
   report.evidence.forEach((item) => details.append(createEvidence(item)));
 
   summary.addEventListener("click", () => {
@@ -344,6 +381,19 @@ function createAgentCard(report) {
   });
   card.append(summary, details);
   return card;
+}
+
+function createToolCall(toolCall) {
+  const wrapper = document.createElement("div");
+  wrapper.className = `tool-call ${toolCall.success ? "tool-ok" : "tool-failed"}`;
+  const status = toolCall.success ? "成功" : toolCall.error_type || "失败";
+  const riskLabels = { read: "只读", low_write: "低风险写入", high_write: "高风险写入", critical: "关键操作" };
+  const risk = riskLabels[toolCall.risk_level] || toolCall.risk_level;
+  const name = toolCall.display_name || toolCall.tool_name;
+  const retry = toolCall.retry_count > 0 ? ` · 已重试 ${toolCall.retry_count} 次` : "";
+  wrapper.textContent = `${name} · ${risk} · ${status} · ${formatNumber(toolCall.elapsed_ms)} ms${retry}`;
+  wrapper.title = `内部工具：${toolCall.tool_name}`;
+  return wrapper;
 }
 
 function createEvidence(evidence) {
@@ -408,6 +458,7 @@ function resetTrace() {
   runState.textContent = "IDLE";
   traceIdLabel.textContent = "TRACE · —";
   renderPersonalization({});
+  renderMemory({});
 }
 
 async function openPreferences() {
@@ -543,7 +594,26 @@ function formatNumber(value) {
 function formatValue(value) {
   if (Array.isArray(value)) return value.join(", ");
   if (value && typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(value)) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return formatChinaDateTime(date);
+  }
   return String(value);
+}
+
+function formatChinaDateTime(date) {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((item) => [item.type, item.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}（北京时间）`;
 }
 
 function escapeHtml(value) {
