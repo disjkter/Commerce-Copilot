@@ -19,6 +19,7 @@ def test_compose_keeps_database_private_and_api_on_loopback():
     assert "pgvector/pgvector:0.8.7-pg14-bookworm" in compose
     assert '"127.0.0.1:8010:8010"' in compose
     assert "5432:5432" not in compose
+    assert "init-vector.sql:/docker-entrypoint-initdb.d/10-vector.sql:ro" in compose
     assert 'command: ["alembic", "upgrade", "head"]' in compose
     assert "no-new-privileges:true" in compose
 
@@ -39,3 +40,11 @@ def test_nginx_proxy_supports_sse_without_buffering():
     assert "proxy_pass http://127.0.0.1:8010" in nginx
     assert "proxy_buffering off" in nginx
     assert "X-Forwarded-For" in nginx
+
+
+def test_postgres_initialization_enables_vector_extension():
+    init_sql = (
+        ROOT / "ops" / "postgres" / "init-vector.sql"
+    ).read_text(encoding="utf-8")
+
+    assert init_sql.strip() == "CREATE EXTENSION IF NOT EXISTS vector;"
