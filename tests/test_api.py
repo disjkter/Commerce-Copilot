@@ -33,11 +33,13 @@ def test_frontend_is_served_with_assets():
     assert 'id="preferences-dialog"' in page.text
     assert 'id="preferences-button"' in page.text
     assert "savePreferences" in script.text
-    assert "/assets/app.js?v=20261117-1" in page.text
+    assert "/assets/app.js?v=20261120-2" in page.text
     assert 'id="trace-id"' in page.text
     assert 'id="memory-section"' in page.text
     assert "renderMemory" in script.text
     assert "/v1/turns/stream" in script.text
+    assert "createStreamingAnswerRenderer" in script.text
+    assert 'parsed.event === "answer_delta"' in script.text
 
 
 def test_health_endpoint():
@@ -158,9 +160,18 @@ def test_stream_endpoint_emits_progress_and_complete_response():
     assert event_names.count("agent_completed") == 2
     assert "grounding_completed" in event_names
     assert "answer_completed" in event_names
+    assert "answer_started" in event_names
+    assert "answer_delta" in event_names
+    assert "answer_finished" in event_names
     assert "workflow_completed" in event_names
     assert event_names[-1] == "complete"
     completed = events[-1][1]["response"]
+    streamed_answer = "".join(
+        payload["delta"] for name, payload in events if name == "answer_delta"
+    )
+    assert streamed_answer == completed["answer"]
+    assert event_names.index("answer_started") < event_names.index("answer_finished")
+    assert event_names.index("answer_finished") < event_names.index("complete")
     assert completed["trace"]["grounding"]["passed"] is True
     assert len(completed["trace"]["trace_id"]) == 32
 

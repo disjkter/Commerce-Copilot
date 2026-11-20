@@ -121,6 +121,11 @@ class HybridRetriever:
             raise ValueError("retrieval strategy must be adaptive or hybrid")
         self.strategy = strategy
 
+    def warmup(self) -> None:
+        """Pay lazy vectorizer initialization cost before serving user traffic."""
+
+        self.vectorizer.encode("电商商品语义检索预热")
+
     def index_catalog(self) -> int:
         """Build the current vectorizer's product index in PostgreSQL."""
         if self.repository.dialect != "postgresql":

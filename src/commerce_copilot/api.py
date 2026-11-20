@@ -4,8 +4,9 @@ import ipaddress
 import json
 import logging
 from collections.abc import AsyncIterator
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -30,6 +31,7 @@ from .metrics import record_rate_limit, render_metrics
 from .observability import log_event
 from .orchestrator import handle_turn
 from .rate_limit import InMemorySlidingWindowRateLimiter, RateLimiter
+from .retrieval import get_retriever
 from .security import InvalidTokenError, decode_access_token
 from .support import LogisticsWebhookResponse, TrackingWebhookPayload
 
@@ -37,6 +39,22 @@ from .support import LogisticsWebhookResponse, TrackingWebhookPayload
 WEB_ROOT = Path(__file__).with_name("web")
 BEARER = HTTPBearer(auto_error=False)
 LOGGER = logging.getLogger("commerce_copilot.api")
+
+
+def _iter_answer_chunks(answer: str, *, max_chars: int = 24) -> list[str]:
+    """Split a validated answer into stable, display-friendly SSE deltas."""
+
+    chunks: list[str] = []
+    start = 0
+    boundaries = "，。！？；,.!?;\n"
+    for index, character in enumerate(answer):
+        length = index - start + 1
+        if character in boundaries or length >= max_chars:
+            chunks.append(answer[start : index + 1])
+            start = index + 1
+    if start < len(answer):
+        chunks.append(answer[start:])
+    return chunks
 
 
 def _client_identity(request: Request, settings: Settings) -> str:
@@ -118,7 +136,34 @@ def require_user(
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.app_name, version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if (
+            settings.embedding_warmup_enabled
+            and settings.embedding_provider.casefold() == "bge"
+        ):
+            started = perf_counter()
+            try:
+                await asyncio.to_thread(get_retriever().warmup)
+                log_event(
+                    LOGGER,
+                    "embedding_warmup_completed",
+                    elapsed_ms=round((perf_counter() - started) * 1000, 2),
+                    model=settings.embedding_model,
+                    device=settings.embedding_device,
+                )
+            except Exception as exc:
+                log_event(
+                    LOGGER,
+                    "embedding_warmup_failed",
+                    level=logging.WARNING,
+                    elapsed_ms=round((perf_counter() - started) * 1000, 2),
+                    error_type=type(exc).__name__,
+                )
+        yield
+
+    app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.rate_limiter = InMemorySlidingWindowRateLimiter()
     app.mount("/assets", StaticFiles(directory=WEB_ROOT), name="assets")
 
@@ -255,6 +300,38 @@ def create_app() -> FastAPI:
             queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
 
             async def publish(event: dict[str, object]) -> None:
+                if event.get("event") == "answer_ready":
+                    answer = event.get("answer")
+                    if not isinstance(answer, str):
+                        return
+                    trace_id = str(event.get("trace_id", ""))
+                    source = str(event.get("source", "local"))
+                    await queue.put(
+                        {
+                            "event": "answer_started",
+                            "trace_id": trace_id,
+                            "source": source,
+                        }
+                    )
+                    for index, delta in enumerate(_iter_answer_chunks(answer)):
+                        await queue.put(
+                            {
+                                "event": "answer_delta",
+                                "trace_id": trace_id,
+                                "index": index,
+                                "delta": delta,
+                            }
+                        )
+                        # Give the ASGI server an opportunity to flush each SSE frame.
+                        await asyncio.sleep(0)
+                    await queue.put(
+                        {
+                            "event": "answer_finished",
+                            "trace_id": trace_id,
+                            "characters": len(answer),
+                        }
+                    )
+                    return
                 await queue.put(event)
 
             async def run_workflow() -> None:

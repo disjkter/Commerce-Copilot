@@ -129,25 +129,96 @@ form.addEventListener("submit", async (event) => {
   messages.append(loading);
   scrollMessages();
   beginLiveTrace();
+  const answerRenderer = createStreamingAnswerRenderer(loading);
 
   try {
-    const body = await consumeTurnStream(text);
+    const body = await consumeTurnStream(text, (delta) => {
+      answerRenderer.push(delta);
+    });
     conversationId = body.conversation_id;
     sessionStorage.setItem("commerce_conversation_id", conversationId);
     updateSessionLabel();
-    loading.remove();
-    appendMessage("assistant", body.answer);
+    await answerRenderer.finish(body.answer);
     renderTrace(body);
     setRunning(false, "done");
   } catch (error) {
-    loading.remove();
-    appendMessage("assistant", `请求失败：${error.message}`);
+    const errorMessage = `请求失败：${error.message}`;
+    answerRenderer.fail(errorMessage);
     renderRequestError(error);
     setRunning(false, "failed");
   }
 });
 
-async function consumeTurnStream(message) {
+function createStreamingAnswerRenderer(loading) {
+  const charactersPerFrame = 3;
+  const frameDelayMs = 24;
+  let paragraph = null;
+  let pending = "";
+  let timer = null;
+  let drainWaiters = [];
+
+  function ensureParagraph() {
+    if (!paragraph) {
+      loading.remove();
+      paragraph = appendMessage("assistant", "");
+    }
+    return paragraph;
+  }
+
+  function resolveDrainWaiters() {
+    if (pending || timer !== null) return;
+    const waiters = drainWaiters;
+    drainWaiters = [];
+    waiters.forEach((resolve) => resolve());
+  }
+
+  function renderNextFrame() {
+    timer = null;
+    if (!pending) {
+      resolveDrainWaiters();
+      return;
+    }
+    const delta = pending.slice(0, charactersPerFrame);
+    pending = pending.slice(charactersPerFrame);
+    ensureParagraph().textContent += delta;
+    scrollMessages();
+    if (pending) timer = window.setTimeout(renderNextFrame, frameDelayMs);
+    else resolveDrainWaiters();
+  }
+
+  function scheduleFrame() {
+    if (timer === null) timer = window.setTimeout(renderNextFrame, frameDelayMs);
+  }
+
+  function waitUntilDrained() {
+    if (!pending && timer === null) return Promise.resolve();
+    return new Promise((resolve) => drainWaiters.push(resolve));
+  }
+
+  return {
+    push(delta) {
+      if (!delta) return;
+      ensureParagraph();
+      pending += delta;
+      scheduleFrame();
+    },
+    async finish(finalAnswer) {
+      await waitUntilDrained();
+      ensureParagraph().textContent = finalAnswer;
+      scrollMessages();
+    },
+    fail(message) {
+      pending = "";
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      resolveDrainWaiters();
+      ensureParagraph().textContent = message;
+      scrollMessages();
+    },
+  };
+}
+
+async function consumeTurnStream(message, onAnswerDelta = () => {}) {
   const response = await fetch("/v1/turns/stream", {
     method: "POST",
     headers: {
@@ -181,6 +252,9 @@ async function consumeTurnStream(message) {
         handleStreamEvent(parsed.event, parsed.data);
         if (parsed.event === "error") {
           throw new Error(parsed.data.error || "流式请求失败");
+        }
+        if (parsed.event === "answer_delta" && typeof parsed.data.delta === "string") {
+          onAnswerDelta(parsed.data.delta);
         }
         if (parsed.event === "complete") completedResponse = parsed.data.response;
       }
@@ -273,6 +347,7 @@ function appendMessage(role, text) {
   article.append(avatar, body);
   messages.append(article);
   scrollMessages();
+  return paragraph;
 }
 
 function renderTrace(body) {

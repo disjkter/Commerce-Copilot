@@ -30,6 +30,7 @@ class Settings:
     embedding_model: str = "BAAI/bge-m3"
     embedding_model_path: str = ""
     embedding_device: str = "cpu"
+    embedding_warmup_enabled: bool = True
     retrieval_strategy: str = "adaptive"
     logistics_webhook_secret: str = (
         "local-logistics-webhook-secret-change-before-deploying"
@@ -74,6 +75,10 @@ def get_settings() -> Settings:
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
         embedding_model_path=os.getenv("EMBEDDING_MODEL_PATH", ""),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
+        embedding_warmup_enabled=os.getenv(
+            "EMBEDDING_WARMUP_ENABLED", "true"
+        ).casefold()
+        in {"1", "true", "yes", "on"},
         retrieval_strategy=os.getenv("RETRIEVAL_STRATEGY", "adaptive").casefold(),
         logistics_webhook_secret=os.getenv(
             "LOGISTICS_WEBHOOK_SECRET",

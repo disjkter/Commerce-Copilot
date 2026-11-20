@@ -77,6 +77,25 @@ async def _emit(
         await sink({"event": event, "trace_id": trace_id, **data})
 
 
+async def _publish_validated_answer(
+    state: WorkflowState,
+    answer: str,
+    source: str,
+) -> None:
+    """Publish an already-grounded answer without writing its content to logs."""
+
+    sink = state.get("event_sink")
+    if sink is not None:
+        await sink(
+            {
+                "event": "answer_ready",
+                "trace_id": state.get("trace_id", ""),
+                "answer": answer,
+                "source": source,
+            }
+        )
+
+
 PLANNER = LLMPlanner()
 ANSWER_COMPOSER = LLMAnswerComposer()
 
@@ -199,7 +218,12 @@ async def compose(state: WorkflowState) -> dict[str, object]:
         if report.status == "completed" and report.role not in blocked_roles
     ]
     if not successful:
-        fallback_answer = "本轮结果未通过事实校验，暂时无法提供确定性回答。"
+        if reports and all(report.status != "completed" for report in reports):
+            fallback_answer = "本轮业务服务响应超时或执行失败，请稍后重试。"
+        elif grounding.issues:
+            fallback_answer = "本轮结果未通过事实校验，暂时无法提供确定性回答。"
+        else:
+            fallback_answer = "暂时没有找到足够的可靠信息，请补充更具体的需求。"
     else:
         fallback_answer = "\n\n".join(successful)
     valid_reports = [
@@ -232,6 +256,7 @@ async def compose(state: WorkflowState) -> dict[str, object]:
         provider=(answer_llm.provider if answer_llm else None),
         model=(answer_llm.model if answer_llm else None),
     )
+    await _publish_validated_answer(state, answer, answer_source)
     return {
         "answer": answer,
         "answer_source": answer_source,
