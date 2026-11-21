@@ -41,6 +41,10 @@ from .contracts import (
     ConversationMemory,
     ConversationTurn,
     Evidence,
+    TurnRequest,
+    TurnResponse,
+    TurnTask,
+    TurnTaskStatus,
     UserPreferences,
     UserRecord,
 )
@@ -429,6 +433,48 @@ user_preferences_table = Table(
     Column("priorities", JSON, nullable=False),
     Column("updated_at", String(32), nullable=False, server_default=func.current_timestamp()),
     CheckConstraint("max_budget_cents IS NULL OR max_budget_cents >= 0"),
+)
+
+turn_tasks_table = Table(
+    "turn_tasks",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("task_id", String(64), nullable=False, unique=True),
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("status", String(32), nullable=False, server_default="pending"),
+    Column("request_json", JSON, nullable=False),
+    Column("response_json", JSON),
+    Column("error_type", String(128)),
+    Column("idempotency_key", String(128)),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    ),
+    Column("started_at", DateTime(timezone=True)),
+    Column("completed_at", DateTime(timezone=True)),
+    UniqueConstraint(
+        "user_id",
+        "idempotency_key",
+        name="turn_tasks_user_idempotency_unique",
+    ),
+    CheckConstraint(
+        "status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')",
+        name="turn_tasks_status_valid",
+    ),
+    CheckConstraint("attempt_count >= 0", name="turn_tasks_attempt_count_valid"),
+)
+Index(
+    "turn_tasks_by_user_created",
+    turn_tasks_table.c.user_id,
+    turn_tasks_table.c.created_at,
+)
+Index(
+    "turn_tasks_pending_queue",
+    turn_tasks_table.c.status,
+    turn_tasks_table.c.created_at,
 )
 
 
@@ -1719,6 +1765,167 @@ class CatalogRepository:
             )
             return True
 
+    def create_turn_task(
+        self,
+        user_id: str,
+        request: TurnRequest,
+        *,
+        idempotency_key: str | None = None,
+    ) -> tuple[TurnTask, bool]:
+        """Persist a pending task, deduplicated within one user when requested."""
+
+        self.initialize()
+        normalized_key = idempotency_key.strip() if idempotency_key else None
+        active_task_id = f"task-{uuid4().hex}"
+        with self.engine.begin() as connection:
+            user_key = connection.scalar(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            )
+            if user_key is None:
+                raise ValueError("user does not exist")
+            if normalized_key:
+                existing = connection.execute(
+                    select(turn_tasks_table).where(
+                        and_(
+                            turn_tasks_table.c.user_id == user_key,
+                            turn_tasks_table.c.idempotency_key == normalized_key,
+                        )
+                    )
+                ).mappings().first()
+                if existing is not None:
+                    return _turn_task_from_row(existing), False
+            connection.execute(
+                insert(turn_tasks_table).values(
+                    task_id=active_task_id,
+                    user_id=user_key,
+                    status=TurnTaskStatus.PENDING.value,
+                    request_json=request.model_dump(mode="json"),
+                    idempotency_key=normalized_key,
+                )
+            )
+            row = connection.execute(
+                select(turn_tasks_table).where(
+                    turn_tasks_table.c.task_id == active_task_id
+                )
+            ).mappings().one()
+        return _turn_task_from_row(row), True
+
+    def get_turn_task(self, task_id: str, *, user_id: str) -> TurnTask | None:
+        self.initialize()
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(turn_tasks_table)
+                .select_from(
+                    turn_tasks_table.join(
+                        users_table,
+                        users_table.c.id == turn_tasks_table.c.user_id,
+                    )
+                )
+                .where(
+                    and_(
+                        turn_tasks_table.c.task_id == task_id,
+                        users_table.c.user_id == user_id,
+                    )
+                )
+            ).mappings().first()
+        return _turn_task_from_row(row) if row is not None else None
+
+    def claim_turn_task(self, task_id: str) -> TurnTask | None:
+        """Atomically move one pending task to running for a single worker."""
+
+        self.initialize()
+        now = datetime.now(timezone.utc)
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(turn_tasks_table)
+                .where(
+                    and_(
+                        turn_tasks_table.c.task_id == task_id,
+                        turn_tasks_table.c.status == TurnTaskStatus.PENDING.value,
+                    )
+                )
+                .values(
+                    status=TurnTaskStatus.RUNNING.value,
+                    started_at=now,
+                    attempt_count=turn_tasks_table.c.attempt_count + 1,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            row = connection.execute(
+                select(turn_tasks_table).where(turn_tasks_table.c.task_id == task_id)
+            ).mappings().one()
+        return _turn_task_from_row(row)
+
+    def complete_turn_task(self, task_id: str, response: TurnResponse) -> bool:
+        return self._finish_turn_task(
+            task_id,
+            status=TurnTaskStatus.SUCCEEDED,
+            response=response,
+        )
+
+    def fail_turn_task(self, task_id: str, *, error_type: str) -> bool:
+        return self._finish_turn_task(
+            task_id,
+            status=TurnTaskStatus.FAILED,
+            error_type=error_type,
+        )
+
+    def _finish_turn_task(
+        self,
+        task_id: str,
+        *,
+        status: TurnTaskStatus,
+        response: TurnResponse | None = None,
+        error_type: str | None = None,
+    ) -> bool:
+        self.initialize()
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(turn_tasks_table)
+                .where(
+                    and_(
+                        turn_tasks_table.c.task_id == task_id,
+                        turn_tasks_table.c.status == TurnTaskStatus.RUNNING.value,
+                    )
+                )
+                .values(
+                    status=status.value,
+                    response_json=(
+                        response.model_dump(mode="json") if response is not None else None
+                    ),
+                    error_type=error_type,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+        return result.rowcount == 1
+
+    def cancel_turn_task(self, task_id: str, *, user_id: str) -> bool:
+        """Cancel only work that has not been claimed by a worker yet."""
+
+        self.initialize()
+        with self.engine.begin() as connection:
+            user_key = connection.scalar(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            )
+            if user_key is None:
+                return False
+            result = connection.execute(
+                update(turn_tasks_table)
+                .where(
+                    and_(
+                        turn_tasks_table.c.task_id == task_id,
+                        turn_tasks_table.c.user_id == user_key,
+                        turn_tasks_table.c.status == TurnTaskStatus.PENDING.value,
+                    )
+                )
+                .values(
+                    status=TurnTaskStatus.CANCELLED.value,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+        return result.rowcount == 1
+
     def add_conversation_turn(
         self,
         conversation_id: str,
@@ -2087,6 +2294,24 @@ def _row_to_user(row: RowMapping) -> UserRecord:
         user_id=row["user_id"],
         username=row["username"],
         password_hash=row["password_hash"],
+    )
+
+
+def _turn_task_from_row(row: RowMapping) -> TurnTask:
+    return TurnTask(
+        task_id=row["task_id"],
+        status=TurnTaskStatus(row["status"]),
+        request=TurnRequest.model_validate(row["request_json"]),
+        response=(
+            TurnResponse.model_validate(row["response_json"])
+            if row["response_json"] is not None
+            else None
+        ),
+        error_type=row["error_type"],
+        attempt_count=row["attempt_count"],
+        created_at=_database_datetime(row["created_at"]),
+        started_at=_database_datetime(row["started_at"]),
+        completed_at=_database_datetime(row["completed_at"]),
     )
 
 

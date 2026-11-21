@@ -9,7 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import ValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,7 +24,7 @@ from .auth import (
     UsernameTakenError,
 )
 from .config import Settings, get_settings
-from .contracts import TurnRequest, TurnResponse, UserPreferences
+from .contracts import TurnRequest, TurnResponse, TurnTask, UserPreferences
 from .database import get_catalog
 from .logistics import verify_webhook_signature
 from .metrics import record_rate_limit, render_metrics
@@ -34,6 +34,7 @@ from .rate_limit import InMemorySlidingWindowRateLimiter, RateLimiter
 from .retrieval import get_retriever
 from .security import InvalidTokenError, decode_access_token
 from .support import LogisticsWebhookResponse, TrackingWebhookPayload
+from .turn_tasks import TurnTaskScheduler, task_can_be_scheduled
 
 
 WEB_ROOT = Path(__file__).with_name("web")
@@ -136,6 +137,7 @@ def require_user(
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    turn_task_scheduler = TurnTaskScheduler()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -161,10 +163,14 @@ def create_app() -> FastAPI:
                     elapsed_ms=round((perf_counter() - started) * 1000, 2),
                     error_type=type(exc).__name__,
                 )
-        yield
+        try:
+            yield
+        finally:
+            await turn_task_scheduler.close()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.rate_limiter = InMemorySlidingWindowRateLimiter()
+    app.state.turn_task_scheduler = turn_task_scheduler
     app.mount("/assets", StaticFiles(directory=WEB_ROOT), name="assets")
 
     @app.get("/", include_in_schema=False)
@@ -281,6 +287,84 @@ def create_app() -> FastAPI:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/turn-tasks",
+        response_model=TurnTask,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def create_turn_task(
+        request: Request,
+        turn: TurnRequest,
+        user: Annotated[PublicUser, Depends(require_user)],
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> TurnTask:
+        """Accept work immediately and execute it outside the request lifecycle."""
+
+        _enforce_rate_limit(
+            app.state.rate_limiter,
+            enabled=settings.rate_limit_enabled,
+            scope="turn",
+            identity=user.user_id,
+            limit=settings.turn_rate_limit,
+            window_seconds=settings.turn_rate_window_seconds,
+        )
+        if idempotency_key is not None and not 1 <= len(idempotency_key.strip()) <= 128:
+            raise HTTPException(status_code=400, detail="invalid Idempotency-Key")
+        task, _ = await asyncio.to_thread(
+            get_catalog().create_turn_task,
+            user.user_id,
+            turn,
+            idempotency_key=idempotency_key,
+        )
+        if task_can_be_scheduled(task):
+            app.state.turn_task_scheduler.submit(task.task_id, user_id=user.user_id)
+        return task
+
+    @app.get("/v1/turn-tasks/{task_id}", response_model=TurnTask)
+    async def get_turn_task(
+        task_id: str,
+        user: Annotated[PublicUser, Depends(require_user)],
+    ) -> TurnTask:
+        task = await asyncio.to_thread(
+            get_catalog().get_turn_task,
+            task_id,
+            user_id=user.user_id,
+        )
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        return task
+
+    @app.delete("/v1/turn-tasks/{task_id}", response_model=TurnTask)
+    async def cancel_turn_task(
+        task_id: str,
+        user: Annotated[PublicUser, Depends(require_user)],
+    ) -> TurnTask:
+        task = await asyncio.to_thread(
+            get_catalog().get_turn_task,
+            task_id,
+            user_id=user.user_id,
+        )
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        cancelled = await asyncio.to_thread(
+            get_catalog().cancel_turn_task,
+            task_id,
+            user_id=user.user_id,
+        )
+        if not cancelled:
+            raise HTTPException(
+                status_code=409,
+                detail="only pending tasks can be cancelled",
+            )
+        refreshed = await asyncio.to_thread(
+            get_catalog().get_turn_task,
+            task_id,
+            user_id=user.user_id,
+        )
+        if refreshed is None:  # Defensive: ownership cannot disappear mid-transaction.
+            raise HTTPException(status_code=404, detail="task not found")
+        return refreshed
 
     @app.post("/v1/turns/stream")
     async def stream_turn(

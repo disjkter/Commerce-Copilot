@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -177,4 +178,24 @@ class TurnResponse(BaseModel):
     reports: list[AgentReport]
     elapsed_ms: float = Field(ge=0)
     trace: TurnTrace
+
+
+class TurnTaskStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TurnTask(BaseModel):
+    task_id: str
+    status: TurnTaskStatus
+    request: TurnRequest
+    response: TurnResponse | None = None
+    error_type: str | None = None
+    attempt_count: int = Field(default=0, ge=0)
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
