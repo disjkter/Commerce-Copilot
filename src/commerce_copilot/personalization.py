@@ -1,4 +1,6 @@
-from .contracts import AgentRole, Mission, UserPreferences
+from collections.abc import Sequence
+
+from .contracts import AgentRole, MemoryItem, Mission, UserPreferences
 
 
 PRODUCT_CATEGORY_TERMS = (
@@ -29,7 +31,11 @@ def extract_product_categories(query: str) -> list[str]:
     return [term for term in PRODUCT_CATEGORY_TERMS if term in query]
 
 
-def personalize_mission(mission: Mission, preferences: UserPreferences) -> Mission:
+def personalize_mission(
+    mission: Mission,
+    preferences: UserPreferences,
+    memory_items: Sequence[MemoryItem] = (),
+) -> Mission:
     """Use saved preferences only where the current request has no explicit value."""
     if mission.role != AgentRole.PRODUCT_SCOUT:
         return mission
@@ -64,6 +70,26 @@ def personalize_mission(mission: Mission, preferences: UserPreferences) -> Missi
         additions.extend(missing_terms)
         if missing_terms:
             applied[field_name] = missing_terms
+
+    accepted_memory_terms: list[str] = []
+    excluded_memory_terms: list[str] = []
+    for memory in memory_items:
+        if not memory.key.startswith("preference.feature."):
+            continue
+        term = str(memory.value.get("term", "")).strip()
+        accepted = memory.value.get("accepted")
+        if not term or term in query:
+            continue
+        if accepted is True:
+            accepted_memory_terms.append(term)
+        elif accepted is False:
+            excluded_memory_terms.append(term)
+    if accepted_memory_terms:
+        additions.extend(accepted_memory_terms)
+        applied["memory_preferences"] = accepted_memory_terms
+    if excluded_memory_terms:
+        parameters["excluded_terms"] = excluded_memory_terms
+        applied["memory_exclusions"] = excluded_memory_terms
 
     if additions:
         query = " ".join(dict.fromkeys([query, *additions]))

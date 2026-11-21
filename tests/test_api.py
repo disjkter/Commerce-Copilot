@@ -134,7 +134,48 @@ def test_turn_endpoint_exposes_agent_trace():
         "grounding",
         "answering",
         "persistence",
+        "memory_item_persistence",
     }
+
+
+def test_user_can_inspect_and_forget_an_atomic_memory():
+    headers = demo_headers()
+    conversation_id = f"memory-api-{uuid4().hex}"
+    turn = client.post(
+        "/v1/turns",
+        headers=headers,
+        json={
+            "message": "我不喜欢入耳式耳机",
+            "conversation_id": conversation_id,
+        },
+    )
+    assert turn.status_code == 200
+
+    listed = client.get("/v1/memories", headers=headers)
+    assert listed.status_code == 200
+    memory = next(
+        item
+        for item in listed.json()
+        if item["key"] == "preference.feature.入耳式"
+        and item["status"] == "active"
+    )
+    assert memory["value"] == {"term": "入耳式", "accepted": False}
+    assert memory["source_type"] == "user_explicit"
+
+    forgotten = client.delete(
+        f"/v1/memories/{memory['memory_id']}",
+        headers=headers,
+    )
+    assert forgotten.status_code == 204
+    audit = client.get(
+        "/v1/memories?include_invalidated=true",
+        headers=headers,
+    )
+    revoked = next(
+        item for item in audit.json() if item["memory_id"] == memory["memory_id"]
+    )
+    assert revoked["status"] == "invalidated"
+    assert revoked["valid_to"] is not None
 
 
 def test_stream_endpoint_emits_progress_and_complete_response():

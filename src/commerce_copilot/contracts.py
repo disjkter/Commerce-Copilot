@@ -79,6 +79,55 @@ class ConversationMemory(BaseModel):
         )
 
 
+class MemoryType(StrEnum):
+    SEMANTIC = "semantic"
+    EPISODIC = "episodic"
+    PROCEDURAL = "procedural"
+
+
+class MemoryScope(StrEnum):
+    CONVERSATION = "conversation"
+    USER = "user"
+
+
+class MemorySourceType(StrEnum):
+    RULE_EXTRACTED = "rule_extracted"
+    USER_EXPLICIT = "user_explicit"
+    TOOL_VERIFIED = "tool_verified"
+    LLM_EXTRACTED = "llm_extracted"
+
+
+class MemoryStatus(StrEnum):
+    ACTIVE = "active"
+    INVALIDATED = "invalidated"
+
+
+class MemoryCandidate(BaseModel):
+    """Validated memory proposal before persistence and conflict resolution."""
+
+    memory_type: MemoryType
+    scope: MemoryScope
+    key: str = Field(min_length=1, max_length=128)
+    value: dict[str, Any]
+    source_type: MemorySourceType
+    confidence: float = Field(ge=0, le=1)
+    evidence_reference: str | None = Field(default=None, max_length=256)
+
+
+class MemoryItem(MemoryCandidate):
+    """Versioned, provenance-aware long-term memory record."""
+
+    memory_id: str
+    user_id: str
+    conversation_id: str | None = None
+    source_turn_id: int | None = None
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    supersedes_memory_id: str | None = None
+    valid_from: datetime
+    valid_to: datetime | None = None
+    created_at: datetime
+
+
 class UserRecord(BaseModel):
     user_id: str
     username: str

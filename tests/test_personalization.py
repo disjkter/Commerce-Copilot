@@ -1,4 +1,14 @@
-from commerce_copilot.contracts import AgentRole, Mission, UserPreferences
+from datetime import datetime, timezone
+
+from commerce_copilot.contracts import (
+    AgentRole,
+    MemoryItem,
+    MemoryScope,
+    MemorySourceType,
+    MemoryType,
+    Mission,
+    UserPreferences,
+)
 from commerce_copilot.personalization import (
     needs_product_clarification,
     personalize_mission,
@@ -67,3 +77,46 @@ def test_only_generic_product_request_needs_clarification():
     assert needs_product_clarification("推荐商品？") is True
     assert needs_product_clarification("推荐耳机") is False
     assert needs_product_clarification("推荐商品 耳机 通勤") is False
+
+
+def test_active_atomic_memories_enrich_and_exclude_product_features():
+    now = datetime.now(timezone.utc)
+    memories = [
+        MemoryItem(
+            memory_id="mem-positive",
+            user_id="user-1",
+            memory_type=MemoryType.SEMANTIC,
+            scope=MemoryScope.USER,
+            key="preference.feature.降噪",
+            value={"term": "降噪", "accepted": True},
+            source_type=MemorySourceType.USER_EXPLICIT,
+            confidence=1,
+            valid_from=now,
+            created_at=now,
+        ),
+        MemoryItem(
+            memory_id="mem-negative",
+            user_id="user-1",
+            memory_type=MemoryType.SEMANTIC,
+            scope=MemoryScope.USER,
+            key="preference.feature.入耳式",
+            value={"term": "入耳式", "accepted": False},
+            source_type=MemorySourceType.USER_EXPLICIT,
+            confidence=1,
+            valid_from=now,
+            created_at=now,
+        ),
+    ]
+
+    result = personalize_mission(
+        product_mission(product_query="推荐耳机"),
+        UserPreferences(),
+        memories,
+    )
+
+    assert result.parameters["product_query"] == "推荐耳机 降噪"
+    assert result.parameters["excluded_terms"] == ["入耳式"]
+    assert result.parameters["applied_preferences"] == {
+        "memory_preferences": ["降噪"],
+        "memory_exclusions": ["入耳式"],
+    }

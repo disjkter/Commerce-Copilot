@@ -25,7 +25,7 @@ from .auth import (
     UsernameTakenError,
 )
 from .config import Settings, get_settings
-from .contracts import TurnRequest, TurnResponse, TurnTask, UserPreferences
+from .contracts import MemoryItem, TurnRequest, TurnResponse, TurnTask, UserPreferences
 from .database import get_catalog
 from .logistics import verify_webhook_signature
 from .metrics import record_rate_limit, render_metrics
@@ -404,6 +404,37 @@ def create_app() -> FastAPI:
         if refreshed is None:  # Defensive: ownership cannot disappear mid-transaction.
             raise HTTPException(status_code=404, detail="task not found")
         return refreshed
+
+    @app.get("/v1/memories", response_model=list[MemoryItem])
+    async def list_memories(
+        user: Annotated[PublicUser, Depends(require_user)],
+        conversation_id: str | None = None,
+        include_invalidated: bool = False,
+    ) -> list[MemoryItem]:
+        """List the authenticated user's inspectable long-term memories."""
+
+        return await asyncio.to_thread(
+            get_catalog().list_memory_items,
+            user_id=user.user_id,
+            conversation_id=conversation_id,
+            include_invalidated=include_invalidated,
+        )
+
+    @app.delete("/v1/memories/{memory_id}", status_code=204)
+    async def forget_memory(
+        memory_id: str,
+        user: Annotated[PublicUser, Depends(require_user)],
+    ) -> Response:
+        """Invalidate a memory while preserving its provenance audit trail."""
+
+        invalidated = await asyncio.to_thread(
+            get_catalog().invalidate_memory_item,
+            memory_id,
+            user_id=user.user_id,
+        )
+        if not invalidated:
+            raise HTTPException(status_code=404, detail="active memory not found")
+        return Response(status_code=204)
 
     @app.post("/v1/turns/stream")
     async def stream_turn(

@@ -41,6 +41,11 @@ from .contracts import (
     ConversationMemory,
     ConversationTurn,
     Evidence,
+    MemoryCandidate,
+    MemoryItem,
+    MemoryScope,
+    MemoryStatus,
+    MemoryType,
     TurnRequest,
     TurnResponse,
     TurnTask,
@@ -415,6 +420,83 @@ conversation_memories_table = Table(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.current_timestamp(),
+    ),
+)
+
+memory_items_table = Table(
+    "memory_items",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("memory_id", String(64), nullable=False, unique=True),
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "conversation_id",
+        ForeignKey("conversation_owners.conversation_id", ondelete="CASCADE"),
+    ),
+    Column("memory_type", String(32), nullable=False),
+    Column("memory_scope", String(32), nullable=False),
+    Column("memory_key", String(128), nullable=False),
+    Column("value_json", JSON, nullable=False),
+    Column("source_type", String(32), nullable=False),
+    Column(
+        "source_turn_id",
+        ForeignKey("conversation_turns.id", ondelete="SET NULL"),
+    ),
+    Column("evidence_reference", String(256)),
+    Column("confidence", Float, nullable=False),
+    Column("status", String(16), nullable=False, server_default="active"),
+    Column("supersedes_memory_id", String(64)),
+    Column("valid_from", DateTime(timezone=True), nullable=False),
+    Column("valid_to", DateTime(timezone=True)),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    ),
+    CheckConstraint("confidence >= 0 AND confidence <= 1"),
+    CheckConstraint("memory_type IN ('semantic', 'episodic', 'procedural')"),
+    CheckConstraint("memory_scope IN ('conversation', 'user')"),
+    CheckConstraint("status IN ('active', 'invalidated')"),
+)
+Index(
+    "memory_items_active_user_key",
+    memory_items_table.c.user_id,
+    memory_items_table.c.status,
+    memory_items_table.c.memory_key,
+)
+Index(
+    "memory_items_active_conversation",
+    memory_items_table.c.conversation_id,
+    memory_items_table.c.status,
+)
+Index(
+    "memory_items_active_user_key_unique",
+    memory_items_table.c.user_id,
+    memory_items_table.c.memory_key,
+    unique=True,
+    sqlite_where=and_(
+        memory_items_table.c.status == "active",
+        memory_items_table.c.memory_scope == "user",
+    ),
+    postgresql_where=and_(
+        memory_items_table.c.status == "active",
+        memory_items_table.c.memory_scope == "user",
+    ),
+)
+Index(
+    "memory_items_active_conversation_key_unique",
+    memory_items_table.c.user_id,
+    memory_items_table.c.conversation_id,
+    memory_items_table.c.memory_key,
+    unique=True,
+    sqlite_where=and_(
+        memory_items_table.c.status == "active",
+        memory_items_table.c.memory_scope == "conversation",
+    ),
+    postgresql_where=and_(
+        memory_items_table.c.status == "active",
+        memory_items_table.c.memory_scope == "conversation",
     ),
 )
 
@@ -1989,7 +2071,7 @@ class CatalogRepository:
         user_message: str,
         assistant_answer: str,
         evidence: Iterable[Evidence] = (),
-    ) -> None:
+    ) -> int:
         self.initialize()
         with self.engine.begin() as connection:
             result = connection.execute(
@@ -2012,6 +2094,173 @@ class CatalogRepository:
             ]
             if evidence_rows:
                 connection.execute(insert(conversation_evidence_table), evidence_rows)
+        return turn_id
+
+    def record_memory_candidates(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        source_turn_id: int,
+        candidates: Sequence[MemoryCandidate],
+    ) -> list[MemoryItem]:
+        """Version memory updates while retaining invalidated values for audit."""
+
+        if not candidates:
+            return []
+        self.initialize()
+        now = datetime.now(timezone.utc)
+        recorded: list[MemoryItem] = []
+        with self.engine.begin() as connection:
+            user_key = connection.execute(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            ).scalar_one_or_none()
+            owner_key = connection.execute(
+                select(conversation_owners_table.c.user_id).where(
+                    conversation_owners_table.c.conversation_id == conversation_id
+                )
+            ).scalar_one_or_none()
+            if user_key is None or owner_key != user_key:
+                raise PermissionError("conversation belongs to another user")
+
+            for candidate in candidates:
+                scoped_conversation_id = (
+                    conversation_id
+                    if candidate.scope is MemoryScope.CONVERSATION
+                    else None
+                )
+                scope_filter = (
+                    memory_items_table.c.conversation_id == scoped_conversation_id
+                    if scoped_conversation_id is not None
+                    else memory_items_table.c.conversation_id.is_(None)
+                )
+                existing = connection.execute(
+                    select(memory_items_table)
+                    .where(
+                        and_(
+                            memory_items_table.c.user_id == user_key,
+                            memory_items_table.c.memory_scope
+                            == candidate.scope.value,
+                            scope_filter,
+                            memory_items_table.c.memory_key == candidate.key,
+                            memory_items_table.c.status
+                            == MemoryStatus.ACTIVE.value,
+                        )
+                    )
+                    .order_by(memory_items_table.c.id.desc())
+                    .limit(1)
+                ).mappings().one_or_none()
+                if existing is not None and existing["value_json"] == candidate.value:
+                    recorded.append(_memory_item_from_row(existing, user_id=user_id))
+                    continue
+
+                supersedes_memory_id = None
+                if existing is not None:
+                    supersedes_memory_id = existing["memory_id"]
+                    connection.execute(
+                        update(memory_items_table)
+                        .where(memory_items_table.c.id == existing["id"])
+                        .values(
+                            status=MemoryStatus.INVALIDATED.value,
+                            valid_to=now,
+                        )
+                    )
+
+                memory_id = f"mem-{uuid4().hex}"
+                connection.execute(
+                    insert(memory_items_table).values(
+                        memory_id=memory_id,
+                        user_id=user_key,
+                        conversation_id=scoped_conversation_id,
+                        memory_type=candidate.memory_type.value,
+                        memory_scope=candidate.scope.value,
+                        memory_key=candidate.key,
+                        value_json=candidate.value,
+                        source_type=candidate.source_type.value,
+                        source_turn_id=source_turn_id,
+                        evidence_reference=candidate.evidence_reference,
+                        confidence=candidate.confidence,
+                        status=MemoryStatus.ACTIVE.value,
+                        supersedes_memory_id=supersedes_memory_id,
+                        valid_from=now,
+                        created_at=now,
+                    )
+                )
+                row = connection.execute(
+                    select(memory_items_table).where(
+                        memory_items_table.c.memory_id == memory_id
+                    )
+                ).mappings().one()
+                recorded.append(_memory_item_from_row(row, user_id=user_id))
+        return recorded
+
+    def list_memory_items(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str | None = None,
+        include_invalidated: bool = False,
+        memory_type: MemoryType | None = None,
+        limit: int = 100,
+    ) -> list[MemoryItem]:
+        """Read user memories with tenant, scope and lifecycle filtering."""
+
+        self.initialize()
+        with self.engine.connect() as connection:
+            user_key = connection.execute(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            ).scalar_one_or_none()
+            if user_key is None:
+                return []
+            conditions = [memory_items_table.c.user_id == user_key]
+            if conversation_id is not None:
+                conditions.append(
+                    (
+                        memory_items_table.c.conversation_id == conversation_id
+                    )
+                    | memory_items_table.c.conversation_id.is_(None)
+                )
+            if not include_invalidated:
+                conditions.append(
+                    memory_items_table.c.status == MemoryStatus.ACTIVE.value
+                )
+            if memory_type is not None:
+                conditions.append(
+                    memory_items_table.c.memory_type == memory_type.value
+                )
+            rows = connection.execute(
+                select(memory_items_table)
+                .where(and_(*conditions))
+                .order_by(memory_items_table.c.valid_from.desc())
+                .limit(max(1, min(limit, 500)))
+            ).mappings().all()
+        return [_memory_item_from_row(row, user_id=user_id) for row in rows]
+
+    def invalidate_memory_item(self, memory_id: str, *, user_id: str) -> bool:
+        """Revoke one active memory without destroying its audit history."""
+
+        self.initialize()
+        with self.engine.begin() as connection:
+            user_key = connection.execute(
+                select(users_table.c.id).where(users_table.c.user_id == user_id)
+            ).scalar_one_or_none()
+            if user_key is None:
+                return False
+            result = connection.execute(
+                update(memory_items_table)
+                .where(
+                    and_(
+                        memory_items_table.c.memory_id == memory_id,
+                        memory_items_table.c.user_id == user_key,
+                        memory_items_table.c.status == MemoryStatus.ACTIVE.value,
+                    )
+                )
+                .values(
+                    status=MemoryStatus.INVALIDATED.value,
+                    valid_to=datetime.now(timezone.utc),
+                )
+            )
+        return result.rowcount == 1
 
     def delete_conversation(self, conversation_id: str, *, user_id: str) -> bool:
         """Delete one owned conversation and its turns, used by benchmark cleanup."""
@@ -2214,6 +2463,31 @@ def _conversation_memory_from_row(row: RowMapping) -> ConversationMemory:
         evidence=[Evidence.model_validate(item) for item in row["evidence_json"] or []],
         compacted_through_turn_id=row["compacted_through_turn_id"],
         source_turn_count=row["source_turn_count"],
+    )
+
+
+def _memory_item_from_row(row: RowMapping, *, user_id: str) -> MemoryItem:
+    return MemoryItem(
+        memory_id=row["memory_id"],
+        user_id=user_id,
+        conversation_id=row["conversation_id"],
+        memory_type=row["memory_type"],
+        scope=row["memory_scope"],
+        key=row["memory_key"],
+        value=row["value_json"],
+        source_type=row["source_type"],
+        source_turn_id=row["source_turn_id"],
+        evidence_reference=row["evidence_reference"],
+        confidence=float(row["confidence"]),
+        status=row["status"],
+        supersedes_memory_id=row["supersedes_memory_id"],
+        valid_from=_database_datetime(row["valid_from"]),
+        valid_to=(
+            _database_datetime(row["valid_to"])
+            if row["valid_to"] is not None
+            else None
+        ),
+        created_at=_database_datetime(row["created_at"]),
     )
 
 

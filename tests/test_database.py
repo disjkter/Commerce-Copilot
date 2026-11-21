@@ -6,6 +6,7 @@ from commerce_copilot.database import (
     _vector_literal,
 )
 from commerce_copilot.contracts import Evidence, UserPreferences
+from commerce_copilot.memory import extract_memory_candidates
 from commerce_copilot.security import hash_password
 
 
@@ -182,6 +183,76 @@ def test_conversation_memory_compacts_old_turns_and_keeps_recent_window(tmp_path
     )
     assert unchanged is not None
     assert unchanged.source_turn_count == 4
+
+
+def test_atomic_memory_versions_conflicts_without_losing_provenance(tmp_path):
+    repository = CatalogRepository(tmp_path / "atomic-memory.db")
+    owner = repository.create_user("atomic-owner", hash_password("password-123"))
+    conversation_id = "atomic-session"
+    assert repository.ensure_conversation_owner(conversation_id, owner.user_id)
+
+    first_turn = repository.add_conversation_turn(
+        conversation_id,
+        "我喜欢入耳式耳机",
+        "已记录",
+    )
+    first_candidate = extract_memory_candidates("我喜欢入耳式耳机")
+    first = repository.record_memory_candidates(
+        user_id=owner.user_id,
+        conversation_id=conversation_id,
+        source_turn_id=first_turn,
+        candidates=first_candidate,
+    )[0]
+
+    second_turn = repository.add_conversation_turn(
+        conversation_id,
+        "我不喜欢入耳式耳机",
+        "已更新",
+    )
+    second_candidate = extract_memory_candidates("我不喜欢入耳式耳机")
+    second = repository.record_memory_candidates(
+        user_id=owner.user_id,
+        conversation_id=conversation_id,
+        source_turn_id=second_turn,
+        candidates=second_candidate,
+    )[0]
+
+    active = repository.list_memory_items(user_id=owner.user_id)
+    audit = repository.list_memory_items(
+        user_id=owner.user_id,
+        include_invalidated=True,
+    )
+
+    assert len(active) == 1
+    assert active[0].value == {"term": "入耳式", "accepted": False}
+    assert second.supersedes_memory_id == first.memory_id
+    assert len(audit) == 2
+    invalidated = next(item for item in audit if item.memory_id == first.memory_id)
+    assert invalidated.status.value == "invalidated"
+    assert invalidated.valid_to is not None
+    assert second.source_turn_id == second_turn
+    assert repository.invalidate_memory_item(
+        second.memory_id,
+        user_id=owner.user_id,
+    ) is True
+    assert repository.list_memory_items(user_id=owner.user_id) == []
+
+
+def test_conversation_memory_does_not_leak_to_another_user(tmp_path):
+    repository = CatalogRepository(tmp_path / "memory-isolation.db")
+    owner = repository.create_user("memory-owner-a", hash_password("password-123"))
+    other = repository.create_user("memory-owner-b", hash_password("password-123"))
+    conversation_id = "isolated-memory-session"
+    assert repository.ensure_conversation_owner(conversation_id, owner.user_id)
+    turn_id = repository.add_conversation_turn(conversation_id, "预算500元", "收到")
+    repository.record_memory_candidates(
+        user_id=owner.user_id,
+        conversation_id=conversation_id,
+        source_turn_id=turn_id,
+        candidates=extract_memory_candidates("预算500元"),
+    )
+
+    assert repository.list_memory_items(user_id=other.user_id) == []
 
 
 def test_order_lookup_enforces_user_ownership(tmp_path):

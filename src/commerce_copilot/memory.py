@@ -5,7 +5,15 @@ from __future__ import annotations
 import re
 
 from .budget import extract_budget_cents
-from .contracts import ConversationMemory, ConversationTurn, Evidence
+from .contracts import (
+    ConversationMemory,
+    ConversationTurn,
+    Evidence,
+    MemoryCandidate,
+    MemoryScope,
+    MemorySourceType,
+    MemoryType,
+)
 
 
 ORDER_PATTERN = re.compile(r"\bORD-\d{4}-\d{4}\b", re.IGNORECASE)
@@ -17,6 +25,19 @@ TOPIC_TERMS = {
     "logistics": ("物流", "快递", "运单", "发货", "到哪"),
     "after_sales": ("退货", "换货", "售后", "工单"),
 }
+PREFERENCE_TERMS = (
+    "头戴式",
+    "入耳式",
+    "无线",
+    "有线",
+    "降噪",
+    "轻量",
+    "长续航",
+    "静音",
+)
+POSITIVE_PREFERENCE_MARKERS = ("喜欢", "偏好", "优先推荐", "想要")
+NEGATIVE_PREFERENCE_MARKERS = ("我不喜欢", "不喜欢", "不要推荐", "不想要")
+TEMPORARY_SCOPE_MARKERS = ("这次", "本次", "当前", "今天")
 
 
 def merge_conversation_memory(
@@ -67,6 +88,93 @@ def merge_conversation_memory(
         compacted_through_turn_id=compacted_through,
         source_turn_count=source_turn_count,
     )
+
+
+def extract_memory_candidates(
+    user_message: str,
+    evidence: list[Evidence] | None = None,
+) -> list[MemoryCandidate]:
+    """Extract high-precision atomic memories without inventing business facts."""
+
+    candidates: list[MemoryCandidate] = []
+    budget = extract_budget_cents(user_message)
+    if budget is not None:
+        candidates.append(
+            MemoryCandidate(
+                memory_type=MemoryType.SEMANTIC,
+                scope=MemoryScope.CONVERSATION,
+                key="constraint.max_price_cents",
+                value={"max_price_cents": budget},
+                source_type=MemorySourceType.RULE_EXTRACTED,
+                confidence=1.0,
+            )
+        )
+
+    order_ids = list(dict.fromkeys(ORDER_PATTERN.findall(user_message.upper())))
+    if order_ids:
+        candidates.append(
+            MemoryCandidate(
+                memory_type=MemoryType.SEMANTIC,
+                scope=MemoryScope.CONVERSATION,
+                key="entity.recent_order_ids",
+                value={"order_ids": order_ids[-10:]},
+                source_type=MemorySourceType.RULE_EXTRACTED,
+                confidence=1.0,
+            )
+        )
+
+    product_evidence = [
+        item for item in (evidence or []) if item.source == "local_catalog"
+    ][:5]
+    if product_evidence:
+        candidates.append(
+            MemoryCandidate(
+                memory_type=MemoryType.SEMANTIC,
+                scope=MemoryScope.CONVERSATION,
+                key="entity.recent_product_ids",
+                value={
+                    "product_ids": [item.reference for item in product_evidence]
+                },
+                source_type=MemorySourceType.TOOL_VERIFIED,
+                confidence=1.0,
+                evidence_reference=product_evidence[0].reference,
+            )
+        )
+
+    temporary = any(marker in user_message for marker in TEMPORARY_SCOPE_MARKERS)
+    preference_scope = (
+        MemoryScope.CONVERSATION if temporary else MemoryScope.USER
+    )
+    for term in PREFERENCE_TERMS:
+        if term not in user_message:
+            continue
+        clause = next(
+            (
+                part
+                for part in re.split(r"[，,。；;！？!?]|(?:但是|不过|但|同时)", user_message)
+                if term in part
+            ),
+            user_message,
+        )
+        accepted: bool | None = None
+        if any(marker in clause for marker in NEGATIVE_PREFERENCE_MARKERS):
+            accepted = False
+        elif any(marker in clause for marker in POSITIVE_PREFERENCE_MARKERS):
+            accepted = True
+        if accepted is None:
+            continue
+        candidates.append(
+            MemoryCandidate(
+                memory_type=MemoryType.SEMANTIC,
+                scope=preference_scope,
+                key=f"preference.feature.{term}",
+                value={"term": term, "accepted": accepted},
+                source_type=MemorySourceType.USER_EXPLICIT,
+                confidence=1.0,
+            )
+        )
+
+    return candidates
 
 
 def _extend_unique(

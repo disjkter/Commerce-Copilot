@@ -153,6 +153,31 @@ async def product_scout(mission: Mission) -> AgentDraft:
             categories=categories,
             limit=3,
         )
+    configured_exclusions = mission.parameters.get("excluded_terms", [])
+    excluded_terms = [
+        str(term).strip()
+        for term in (
+            configured_exclusions
+            if isinstance(configured_exclusions, list)
+            else []
+        )
+        if str(term).strip()
+    ]
+    if excluded_terms:
+        hits = [
+            hit
+            for hit in hits
+            if not any(
+                term in " ".join(
+                    [
+                        hit.product.title,
+                        hit.product.description,
+                        *hit.product.tags,
+                    ]
+                )
+                for term in excluded_terms
+            )
+        ]
     if mission.parameters.get("sort_by") == "price_asc":
         hits.sort(key=lambda hit: (hit.product.price_cents, -hit.product.rating))
     if not hits:

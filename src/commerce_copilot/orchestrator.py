@@ -21,6 +21,7 @@ from .contracts import (
     LLMCallTrace,
     Mission,
     MemoryTrace,
+    MemoryItem,
     StageTiming,
     TurnResponse,
     TurnTrace,
@@ -33,6 +34,7 @@ from .metrics import (
     record_turn_failure,
     record_turn_response,
 )
+from .memory import extract_memory_candidates
 from .observability import bind_trace_id, log_event, reset_trace_id
 from .planning import LLMPlanner, local_plan
 from .personalization import personalize_mission
@@ -47,6 +49,7 @@ class WorkflowState(TypedDict, total=False):
     user_id: str
     history: list[ConversationTurn]
     preferences: UserPreferences
+    memory_items: list[MemoryItem]
     missions: list[Mission]
     mission: Mission
     reports: Annotated[list[AgentReport], operator.add]
@@ -136,6 +139,7 @@ async def plan(state: WorkflowState) -> dict[str, object]:
                 }
             ),
             state.get("preferences", UserPreferences()),
+            state.get("memory_items", []),
         )
         for mission in decision.missions
     ]
@@ -417,12 +421,30 @@ async def _handle_turn(
         operation="get_user_preferences",
         elapsed_ms=preferences_elapsed_ms,
     )
+    memory_items_started = perf_counter()
+    memory_items = await asyncio.to_thread(
+        repository.list_memory_items,
+        user_id=user_id,
+        conversation_id=active_conversation_id,
+    )
+    memory_items_elapsed_ms = round(
+        (perf_counter() - memory_items_started) * 1000,
+        2,
+    )
+    log_event(
+        LOGGER,
+        "repository_completed",
+        operation="list_memory_items",
+        elapsed_ms=memory_items_elapsed_ms,
+        result_count=len(memory_items),
+    )
     result = await GRAPH.ainvoke(
         {
             "message": message,
             "user_id": user_id,
             "history": history,
             "preferences": preferences,
+            "memory_items": memory_items,
             "reports": [],
             "local_only": local_only,
             "trace_id": trace_id,
@@ -464,6 +486,7 @@ async def _handle_turn(
                         ownership_elapsed_ms
                         + history_elapsed_ms
                         + preferences_elapsed_ms
+                        + memory_items_elapsed_ms
                     ),
                 ),
                 *result.get("stage_timings", []),
@@ -471,12 +494,13 @@ async def _handle_turn(
         ),
     )
     persistence_started = perf_counter()
-    await asyncio.to_thread(
+    turn_evidence = [item for report in reports for item in report.evidence]
+    turn_id = await asyncio.to_thread(
         repository.add_conversation_turn,
         active_conversation_id,
         message,
         response.answer,
-        [item for report in reports for item in report.evidence],
+        turn_evidence,
     )
     persistence_elapsed_ms = round((perf_counter() - persistence_started) * 1000, 2)
     response.trace.stage_timings.append(
@@ -487,8 +511,53 @@ async def _handle_turn(
         "repository_completed",
         operation="add_conversation_turn",
         elapsed_ms=persistence_elapsed_ms,
-        evidence_count=sum(len(report.evidence) for report in reports),
+        evidence_count=len(turn_evidence),
     )
+    memory_item_started = perf_counter()
+    try:
+        candidates = extract_memory_candidates(message, turn_evidence)
+        recorded_memories = await asyncio.to_thread(
+            repository.record_memory_candidates,
+            user_id=user_id,
+            conversation_id=active_conversation_id,
+            source_turn_id=turn_id,
+            candidates=candidates,
+        )
+        memory_item_elapsed_ms = round(
+            (perf_counter() - memory_item_started) * 1000,
+            2,
+        )
+        response.trace.stage_timings.append(
+            StageTiming(
+                stage="memory_item_persistence",
+                elapsed_ms=memory_item_elapsed_ms,
+            )
+        )
+        log_event(
+            LOGGER,
+            "memory_items_recorded",
+            elapsed_ms=memory_item_elapsed_ms,
+            candidate_count=len(candidates),
+            recorded_count=len(recorded_memories),
+        )
+    except Exception as memory_item_error:
+        memory_item_elapsed_ms = round(
+            (perf_counter() - memory_item_started) * 1000,
+            2,
+        )
+        response.trace.stage_timings.append(
+            StageTiming(
+                stage="memory_item_persistence",
+                elapsed_ms=memory_item_elapsed_ms,
+            )
+        )
+        log_event(
+            LOGGER,
+            "memory_items_recording_failed",
+            level=logging.WARNING,
+            elapsed_ms=memory_item_elapsed_ms,
+            error_type=type(memory_item_error).__name__,
+        )
     if settings.context_compaction_enabled:
         compaction_started = perf_counter()
         previous_source_turns = response.trace.memory.source_turns
