@@ -11,6 +11,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import ValidationError
+from redis.exceptions import RedisError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +35,7 @@ from .rate_limit import InMemorySlidingWindowRateLimiter, RateLimiter
 from .retrieval import get_retriever
 from .security import InvalidTokenError, decode_access_token
 from .support import LogisticsWebhookResponse, TrackingWebhookPayload
+from .task_queue import RedisTurnTaskQueue
 from .turn_tasks import TurnTaskScheduler, task_can_be_scheduled
 
 
@@ -137,7 +139,19 @@ def require_user(
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    turn_task_scheduler = TurnTaskScheduler()
+    turn_task_scheduler = TurnTaskScheduler(
+        worker_id="api-fallback",
+        lease_seconds=settings.task_lease_seconds,
+    )
+    turn_task_queue = (
+        RedisTurnTaskQueue(
+            settings.redis_url,
+            stream_key=settings.task_stream_key,
+            consumer_group=settings.task_consumer_group,
+        )
+        if settings.task_queue_backend == "redis"
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -167,10 +181,13 @@ def create_app() -> FastAPI:
             yield
         finally:
             await turn_task_scheduler.close()
+            if turn_task_queue is not None:
+                await turn_task_queue.close()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.rate_limiter = InMemorySlidingWindowRateLimiter()
     app.state.turn_task_scheduler = turn_task_scheduler
+    app.state.turn_task_queue = turn_task_queue
     app.mount("/assets", StaticFiles(directory=WEB_ROOT), name="assets")
 
     @app.get("/", include_in_schema=False)
@@ -318,7 +335,29 @@ def create_app() -> FastAPI:
             idempotency_key=idempotency_key,
         )
         if task_can_be_scheduled(task):
-            app.state.turn_task_scheduler.submit(task.task_id, user_id=user.user_id)
+            if app.state.turn_task_queue is not None:
+                try:
+                    await app.state.turn_task_queue.enqueue(
+                        task.task_id,
+                        user_id=user.user_id,
+                    )
+                except (RedisError, OSError) as exc:
+                    log_event(
+                        LOGGER,
+                        "turn_task_queue_fallback",
+                        level=logging.WARNING,
+                        task_id=task.task_id,
+                        error_type=type(exc).__name__,
+                    )
+                    app.state.turn_task_scheduler.submit(
+                        task.task_id,
+                        user_id=user.user_id,
+                    )
+            else:
+                app.state.turn_task_scheduler.submit(
+                    task.task_id,
+                    user_id=user.user_id,
+                )
         return task
 
     @app.get("/v1/turn-tasks/{task_id}", response_model=TurnTask)

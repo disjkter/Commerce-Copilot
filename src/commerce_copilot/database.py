@@ -447,6 +447,8 @@ turn_tasks_table = Table(
     Column("error_type", String(128)),
     Column("idempotency_key", String(128)),
     Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("worker_id", String(128)),
+    Column("lease_expires_at", DateTime(timezone=True)),
     Column(
         "created_at",
         DateTime(timezone=True),
@@ -1830,24 +1832,40 @@ class CatalogRepository:
             ).mappings().first()
         return _turn_task_from_row(row) if row is not None else None
 
-    def claim_turn_task(self, task_id: str) -> TurnTask | None:
+    def claim_turn_task(
+        self,
+        task_id: str,
+        *,
+        worker_id: str = "in-process",
+        lease_seconds: int = 120,
+    ) -> TurnTask | None:
         """Atomically move one pending task to running for a single worker."""
 
         self.initialize()
         now = datetime.now(timezone.utc)
+        lease_expires_at = now + timedelta(seconds=max(1, lease_seconds))
         with self.engine.begin() as connection:
             result = connection.execute(
                 update(turn_tasks_table)
                 .where(
                     and_(
                         turn_tasks_table.c.task_id == task_id,
-                        turn_tasks_table.c.status == TurnTaskStatus.PENDING.value,
+                        (
+                            (turn_tasks_table.c.status == TurnTaskStatus.PENDING.value)
+                            | and_(
+                                turn_tasks_table.c.status
+                                == TurnTaskStatus.RUNNING.value,
+                                turn_tasks_table.c.lease_expires_at < now,
+                            )
+                        ),
                     )
                 )
                 .values(
                     status=TurnTaskStatus.RUNNING.value,
                     started_at=now,
                     attempt_count=turn_tasks_table.c.attempt_count + 1,
+                    worker_id=worker_id,
+                    lease_expires_at=lease_expires_at,
                 )
             )
             if result.rowcount != 1:
@@ -1857,18 +1875,32 @@ class CatalogRepository:
             ).mappings().one()
         return _turn_task_from_row(row)
 
-    def complete_turn_task(self, task_id: str, response: TurnResponse) -> bool:
+    def complete_turn_task(
+        self,
+        task_id: str,
+        response: TurnResponse,
+        *,
+        worker_id: str = "in-process",
+    ) -> bool:
         return self._finish_turn_task(
             task_id,
             status=TurnTaskStatus.SUCCEEDED,
             response=response,
+            worker_id=worker_id,
         )
 
-    def fail_turn_task(self, task_id: str, *, error_type: str) -> bool:
+    def fail_turn_task(
+        self,
+        task_id: str,
+        *,
+        error_type: str,
+        worker_id: str = "in-process",
+    ) -> bool:
         return self._finish_turn_task(
             task_id,
             status=TurnTaskStatus.FAILED,
             error_type=error_type,
+            worker_id=worker_id,
         )
 
     def _finish_turn_task(
@@ -1878,6 +1910,7 @@ class CatalogRepository:
         status: TurnTaskStatus,
         response: TurnResponse | None = None,
         error_type: str | None = None,
+        worker_id: str,
     ) -> bool:
         self.initialize()
         with self.engine.begin() as connection:
@@ -1887,6 +1920,7 @@ class CatalogRepository:
                     and_(
                         turn_tasks_table.c.task_id == task_id,
                         turn_tasks_table.c.status == TurnTaskStatus.RUNNING.value,
+                        turn_tasks_table.c.worker_id == worker_id,
                     )
                 )
                 .values(
@@ -1896,9 +1930,32 @@ class CatalogRepository:
                     ),
                     error_type=error_type,
                     completed_at=datetime.now(timezone.utc),
+                    lease_expires_at=None,
                 )
             )
         return result.rowcount == 1
+
+    def list_pending_turn_tasks(self, *, limit: int = 100) -> list[tuple[str, str]]:
+        """Return pending task/user pairs for queue recovery after an outage."""
+
+        self.initialize()
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(
+                    turn_tasks_table.c.task_id,
+                    users_table.c.user_id,
+                )
+                .select_from(
+                    turn_tasks_table.join(
+                        users_table,
+                        users_table.c.id == turn_tasks_table.c.user_id,
+                    )
+                )
+                .where(turn_tasks_table.c.status == TurnTaskStatus.PENDING.value)
+                .order_by(turn_tasks_table.c.created_at, turn_tasks_table.c.id)
+                .limit(max(1, min(limit, 1000)))
+            ).all()
+        return [(row.task_id, row.user_id) for row in rows]
 
     def cancel_turn_task(self, task_id: str, *, user_id: str) -> bool:
         """Cancel only work that has not been claimed by a worker yet."""

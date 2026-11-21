@@ -6,7 +6,7 @@
 
 Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是把所有逻辑塞进一次模型调用，而是让 Supervisor 拆分任务，领域 Agent 并发执行确定性工具，Grounding 校验事实后再生成最终回答。
 
-生产演示环境支持使用 `compose.yaml` 启动FastAPI、pgvector PostgreSQL与一次性Alembic迁移任务。数据库仅位于Compose内部网络，API只绑定宿主机`127.0.0.1:8010`，由宿主机Nginx对外提供HTTP/SSE服务；应用容器使用非root用户并移除Linux capabilities。部署前复制`.env.production.example`为`.env.production`并替换全部占位密钥，启动时使用`docker compose --env-file .env.production up -d --build`。
+生产演示环境支持使用 `compose.yaml` 启动 FastAPI、独立 Agent Worker、Redis Streams、pgvector PostgreSQL 与一次性 Alembic 迁移任务。PostgreSQL 和 Redis 仅位于 Compose 内部网络，API 只绑定宿主机 `127.0.0.1:8010`，由宿主机 Nginx 对外提供 HTTP/SSE 服务；应用容器使用非 root 用户并移除 Linux capabilities。部署前复制 `.env.production.example` 为 `.env.production` 并替换全部占位密钥，启动时使用 `docker compose --env-file .env.production up -d --build`。
 
 ```text
 多意图拆分 · 并发 Agent · Hybrid Retrieval · RRF · Grounding
@@ -37,8 +37,9 @@ Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是
 | 多轮能力 | 原始会话审计、近期窗口、结构化长期记忆、跨轮实体与商品序号指代 |
 | 个性化 | 用户预算、品类、品牌、场景和关注点持久化，本轮条件优先 |
 | 数据层 | PostgreSQL、SQLAlchemy Repository、Alembic；测试支持临时 SQLite |
+| 异步任务 | PostgreSQL 任务状态机、Redis Streams 消费组、独立 Worker、幂等提交、租约与崩溃恢复 |
 | 安全 | PBKDF2 密码哈希、签名 Token、订单归属、会话隔离、Webhook 验签和分级滑动窗口限流 |
-| 工程质量 | 160+ 个自动化测试、离线检索评测、Web Trace、Prometheus 指标、真实 Git 迭代历史 |
+| 工程质量 | 190+ 个自动化测试、离线检索评测、Web Trace、Prometheus 指标、真实 Git 迭代历史 |
 
 ## 项目文档
 
@@ -54,7 +55,7 @@ Commerce Copilot 面向商品发现、订单售后和普通咨询。项目不是
 
 ## 当前状态与后续规划
 
-当前版本已经形成可运行、可测试的完整闭环，并具备 SSE 实时执行轨迹、`trace_id`、结构化 JSON 日志、Prometheus 聚合指标和分层性能评测。下一阶段将依次补充 BGE + pgvector、Redis 缓存与限流、容器化部署和外部压力测试。规划功能与已实现能力严格分开，详细验收标准见 [roadmap](docs/roadmap.md)。
+当前版本已经形成可运行、可测试、可容器化部署的完整闭环，并具备 BGE + pgvector 混合检索、Redis Streams 异步任务、SSE 实时执行轨迹、`trace_id`、结构化 JSON 日志、Prometheus 聚合指标和分层性能评测。后续重点是任务自动重试/死信队列、Redis 限流缓存和云端压力测试。规划功能与已实现能力严格分开，详细验收标准见 [roadmap](docs/roadmap.md)。
 
 ## 架构
 
@@ -75,6 +76,19 @@ Supervisor ──拆分任务──┬── Product Scout
 
 领域 Agent 只接收自己的任务，不共享可变中间状态。多个任务由 LangGraph fan-out 并发执行，Composer 只消费标准化的 `AgentReport`。
 
+耗时请求还可以通过异步任务接口执行：
+
+```text
+POST /v1/turn-tasks
+        │  任务元数据持久化
+        ▼
+PostgreSQL ── XADD ──► Redis Stream ── XREADGROUP ──► Agent Worker
+     ▲                                                        │
+     └────────────── 状态/结果落库后 XACK ◄───────────────────┘
+```
+
+PostgreSQL 是任务状态和结果的事实源，Redis 只承担低延迟投递。Worker 使用数据库原子领取和租约避免同一任务并发执行；进程崩溃时，未确认消息通过 `XAUTOCLAIM` 转交其他消费者，过期租约允许重新领取。Redis 暂时不可用时，API 会降级为进程内调度，避免用户请求直接失败。
+
 ## 核心目录
 
 ```text
@@ -88,6 +102,9 @@ src/commerce_copilot/
 ├─ grounding.py         # Claim–Evidence 校验
 ├─ answering.py         # 证据化回答与本地降级
 ├─ database.py          # SQLAlchemy 表结构与 Repository
+├─ turn_tasks.py        # 持久化任务状态机、领取租约与执行器
+├─ task_queue.py        # Redis Streams 消费组协议
+├─ task_worker.py       # 独立异步 Agent Worker
 ├─ api.py               # FastAPI、鉴权依赖与接口
 └─ web/                 # 可观测对话界面
 ```
@@ -106,6 +123,8 @@ py -3.12 -m venv .venv
 ```
 
 打开 `http://127.0.0.1:8010/` 使用对话与 Agent 可观测界面；`http://127.0.0.1:8010/docs` 提供 API 调试文档。
+
+本地默认使用进程内异步调度，不要求安装 Redis。生产 Compose 会自动设置 `TASK_QUEUE_BACKEND=redis` 并启动独立 Worker。异步接口 `POST /v1/turn-tasks` 立即返回 `202` 和任务 ID，客户端使用 `GET /v1/turn-tasks/{task_id}` 查询结果，或在任务尚未开始时使用 `DELETE` 取消。重复提交时携带相同 `Idempotency-Key` 可复用已有任务。
 
 推荐用下面的问题验证多 Agent 并发：
 

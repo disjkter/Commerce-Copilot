@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from uuid import uuid4
 
 from .contracts import TurnResponse, TurnTask, TurnTaskStatus
 from .database import CatalogRepository, get_catalog
@@ -27,9 +28,14 @@ class TurnTaskScheduler:
         self,
         repository: CatalogRepository | None = None,
         executor: TurnExecutor = handle_turn,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int = 120,
     ) -> None:
         self._repository = repository
         self._executor = executor
+        self.worker_id = worker_id or f"in-process-{uuid4().hex[:12]}"
+        self.lease_seconds = lease_seconds
         self._tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -40,16 +46,23 @@ class TurnTaskScheduler:
 
     def submit(self, task_id: str, *, user_id: str) -> None:
         background = asyncio.create_task(
-            self._run(task_id, user_id=user_id),
+            self.execute(task_id, user_id=user_id),
             name=f"turn-task:{task_id}",
         )
         self._tasks.add(background)
         background.add_done_callback(self._tasks.discard)
 
-    async def _run(self, task_id: str, *, user_id: str) -> None:
-        task = await asyncio.to_thread(self.repository.claim_turn_task, task_id)
+    async def execute(self, task_id: str, *, user_id: str) -> bool:
+        """Claim and execute one task; return whether its queue message can be acked."""
+
+        task = await asyncio.to_thread(
+            self.repository.claim_turn_task,
+            task_id,
+            worker_id=self.worker_id,
+            lease_seconds=self.lease_seconds,
+        )
         if task is None:
-            return
+            return True
         log_event(LOGGER, "turn_task_started", task_id=task_id)
         try:
             response = await self._executor(
@@ -62,13 +75,15 @@ class TurnTaskScheduler:
                 self.repository.fail_turn_task,
                 task_id,
                 error_type="WorkerShutdown",
+                worker_id=self.worker_id,
             )
             raise
         except Exception as exc:
-            await asyncio.to_thread(
+            failed = await asyncio.to_thread(
                 self.repository.fail_turn_task,
                 task_id,
                 error_type=type(exc).__name__,
+                worker_id=self.worker_id,
             )
             log_event(
                 LOGGER,
@@ -77,13 +92,18 @@ class TurnTaskScheduler:
                 task_id=task_id,
                 error_type=type(exc).__name__,
             )
-            return
-        await asyncio.to_thread(
+            # A worker whose lease was already taken over must not acknowledge
+            # the Redis message owned by the replacement worker.
+            return failed
+        completed = await asyncio.to_thread(
             self.repository.complete_turn_task,
             task_id,
             response,
+            worker_id=self.worker_id,
         )
-        log_event(LOGGER, "turn_task_completed", task_id=task_id)
+        if completed:
+            log_event(LOGGER, "turn_task_completed", task_id=task_id)
+        return completed
 
     async def close(self) -> None:
         running = list(self._tasks)

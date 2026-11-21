@@ -52,13 +52,28 @@ def test_turn_task_state_machine_and_idempotency(tmp_path):
     assert duplicate.task_id == created.task_id
     assert created.status is TurnTaskStatus.PENDING
 
-    running = repository.claim_turn_task(created.task_id)
+    running = repository.claim_turn_task(created.task_id, worker_id="worker-a")
     assert running is not None
     assert running.status is TurnTaskStatus.RUNNING
     assert running.attempt_count == 1
-    assert repository.claim_turn_task(created.task_id) is None
+    assert repository.claim_turn_task(created.task_id, worker_id="worker-b") is None
 
-    assert repository.complete_turn_task(created.task_id, make_response()) is True
+    assert (
+        repository.complete_turn_task(
+            created.task_id,
+            make_response(),
+            worker_id="worker-b",
+        )
+        is False
+    )
+    assert (
+        repository.complete_turn_task(
+            created.task_id,
+            make_response(),
+            worker_id="worker-a",
+        )
+        is True
+    )
     completed = repository.get_turn_task(created.task_id, user_id="user-demo")
     assert completed is not None
     assert completed.status is TurnTaskStatus.SUCCEEDED

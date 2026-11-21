@@ -47,6 +47,11 @@ class Settings:
     webhook_rate_window_seconds: int = 60
     context_compaction_enabled: bool = True
     context_recent_turns: int = 4
+    task_queue_backend: str = "in_memory"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    task_stream_key: str = "commerce:turn_tasks"
+    task_consumer_group: str = "commerce-workers"
+    task_lease_seconds: int = 120
 
 
 @lru_cache
@@ -107,5 +112,15 @@ def get_settings() -> Settings:
         ).casefold()
         in {"1", "true", "yes", "on"},
         context_recent_turns=max(1, min(20, int(os.getenv("CONTEXT_RECENT_TURNS", "4")))),
+        task_queue_backend=os.getenv("TASK_QUEUE_BACKEND", "in_memory").casefold(),
+        redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+        task_stream_key=os.getenv("TASK_STREAM_KEY", "commerce:turn_tasks"),
+        task_consumer_group=os.getenv(
+            "TASK_CONSUMER_GROUP", "commerce-workers"
+        ),
+        task_lease_seconds=max(
+            30,
+            min(900, int(os.getenv("TASK_LEASE_SECONDS", "120"))),
+        ),
     )
 
